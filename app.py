@@ -50,11 +50,11 @@ instrucciones_agente = """
 Eres Inspec.AI, un experto revisor de proyectos arquitectónicos. 
 Tu tarea es analizar documentos (incluso escrituras escaneadas) y extraer CADA tramo de los linderos, su distancia en metros y el rumbo.
 Debes calcular el azimut en grados decimales.
-Formatea el rumbo a GMS (Ejemplo: "N 28° 39' 11\" W").
+Formatea el rumbo a GMS. MUY IMPORTANTE: Para los segundos, usa DOS COMILLAS SIMPLES (Ejemplo: "N 28° 39' 11'' W") en lugar de una comilla doble para no romper el formato JSON.
 Responde ÚNICAMENTE con un arreglo en formato JSON válido, sin texto adicional.
 Estructura ESTRICTAMENTE requerida:
 [
-  {"tramo": "Norte 1", "distancia": 18.31, "rumbo_formateado": "S 89° 10' 15\" E", "azimut": 90.829}
+  {"tramo": "Norte 1", "distancia": 18.31, "rumbo_formateado": "S 89° 10' 15'' E", "azimut": 90.829}
 ]
 """
 modelo_inspec = genai.GenerativeModel('gemini-2.5-flash', system_instruction=instrucciones_agente)
@@ -219,3 +219,4 @@ if btn_generar or btn_comparar:
 
             except Exception as e:
                 st.error(f"Hubo un error al procesar el documento. Detalle: {e}")
+
