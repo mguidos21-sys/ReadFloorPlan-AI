@@ -4,14 +4,14 @@ import json
 import math
 import matplotlib.pyplot as plt
 import ezdxf
-import os
+import PyPDF2
 
 # 1. Configuración de la App
 st.set_page_config(page_title="Inspec.AI - Poligonales", layout="wide")
 st.title("🏗️ Inspec.AI: Generador Automático de Poligonales")
-st.write("Pega la descripción técnica del terreno para extraer rumbos, distancias y generar el archivo CAD.")
+st.write("Sube tu documento en PDF o pega la descripción técnica del terreno para generar el archivo CAD.")
 
-# 2. Conectar la API (Usando los secretos de Streamlit)
+# 2. Conectar la API
 try:
     GOOGLE_API_KEY = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=GOOGLE_API_KEY)
@@ -22,7 +22,7 @@ except KeyError:
 # 3. Instrucciones del Agente
 instrucciones_agente = """
 Eres Inspec.AI, un experto revisor de proyectos arquitectónicos. 
-Tu tarea es leer descripciones técnicas y extraer cada tramo, su distancia en metros, el texto exacto del rumbo y calcular su equivalente en azimut en grados decimales (Ej: Norte 28° 39' 11" Oeste = 331.347).
+Tu tarea es leer descripciones técnicas y extraer cada tramo, su distancia en metros, el texto exacto del rumbo y calcular su equivalente en azimut en grados decimales.
 Responde ÚNICAMENTE con un arreglo en formato JSON válido, sin texto adicional.
 Estructura esperada:
 [
@@ -31,12 +31,29 @@ Estructura esperada:
 """
 modelo_inspec = genai.GenerativeModel('gemini-2.5-flash', system_instruction=instrucciones_agente)
 
-# 4. Interfaz de Usuario
-texto_escritura = st.text_area("📄 Texto de la Escritura o Descripción Técnica:", height=250)
+# 4. Interfaz de Usuario: Carga de PDF y Texto
+texto_preliminar = ""
+
+# Widget para subir PDF
+archivo_pdf = st.file_uploader("📂 Sube la escritura en formato PDF (Opcional)", type=["pdf"])
+
+if archivo_pdf is not None:
+    try:
+        lector_pdf = PyPDF2.PdfReader(archivo_pdf)
+        for pagina in lector_pdf.pages:
+            texto_extraido = pagina.extract_text()
+            if texto_extraido:
+                texto_preliminar += texto_extraido + "\n"
+        st.success("✅ PDF leído correctamente. Revisa el texto extraído abajo.")
+    except Exception as e:
+        st.error(f"Hubo un error al leer el PDF: {e}")
+
+# Cuadro de texto (se llena automáticamente si se sube un PDF)
+texto_escritura = st.text_area("📄 Texto de la Escritura (Edita o pega texto manualmente):", value=texto_preliminar, height=250)
 
 if st.button("🚀 Procesar y Generar DXF"):
     if not texto_escritura.strip():
-        st.warning("Por favor, ingresa el texto del documento primero.")
+        st.warning("Por favor, sube un PDF o ingresa el texto del documento primero.")
     else:
         with st.spinner('Analizando texto y calculando geometría...'):
             try:
