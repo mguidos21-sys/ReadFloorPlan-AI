@@ -33,9 +33,9 @@ def extraer_poligono_dxf(file_stream):
     return None, None
 
 # --- 1. CONFIGURACIÓN DE LA APP ---
-st.set_page_config(page_title="Inspec.AI - Comparativo", layout="wide")
+st.set_page_config(page_title="Inspec.AI", layout="wide")
 st.title("🏗️ Inspec.AI: Generador y Comparador de Poligonales")
-st.write("Genera poligonales limpias con identificación de mojones y compáralas con los planos CAD de tus contratistas.")
+st.write("Genera poligonales a partir de documentos legales y, de forma opcional, compáralas con los planos CAD de tus contratistas.")
 
 # --- 2. CONEXIÓN API ---
 try:
@@ -57,20 +57,25 @@ modelo_inspec = genai.GenerativeModel('gemini-2.5-flash', system_instruction=ins
 # --- 3. INTERFAZ DE CARGA ---
 col1, col2 = st.columns(2)
 with col1:
-    st.subheader("1. Datos Legales (Inspec.AI)")
+    st.subheader("📄 1. Datos Legales (Obligatorio)")
     archivo_pdf = st.file_uploader("📂 Sube la escritura (PDF)", type=["pdf"], key="pdf_legal")
-    texto_escritura = st.text_area("📄 O pega el texto manualmente:", height=100)
+    texto_escritura = st.text_area("📝 O pega el texto manualmente:", height=100)
+    btn_generar = st.button("🚀 Solo Generar Poligonal", use_container_width=True)
 
 with col2:
-    st.subheader("2. Comparativo (Opcional)")
-    archivo_dxf_prof = st.file_uploader("📂 Sube el plano del topógrafo (.dxf) para cotejar", type=["dxf"], key="dxf_prof")
-    st.info("Pídele al dibujante que guarde su DWG de AutoCAD usando 'Guardar como -> DXF' antes de subirlo.")
+    st.subheader("🗺️ 2. Comparativo (Opcional)")
+    archivo_dxf_prof = st.file_uploader("📂 Sube el plano del topógrafo (.dxf)", type=["dxf"], key="dxf_prof")
+    st.info("Pídele al dibujante que guarde su DWG usando 'Guardar como -> DXF'.")
+    btn_comparar = st.button("⚖️ Generar y Comparar Planos", use_container_width=True)
 
-if st.button("🚀 Procesar y Comparar Proyecto", use_container_width=True):
-    if archivo_pdf is None and not texto_escritura.strip():
-        st.warning("Por favor, sube la escritura o ingresa el texto primero en la columna izquierda.")
+# --- 4. LÓGICA DE PROCESAMIENTO ---
+if btn_generar or btn_comparar:
+    if btn_comparar and archivo_dxf_prof is None:
+        st.error("⚠️ Para realizar el comparativo, necesitas subir un archivo .dxf en la columna derecha.")
+    elif archivo_pdf is None and not texto_escritura.strip():
+        st.warning("⚠️ Por favor, sube la escritura o ingresa el texto primero en la columna izquierda.")
     else:
-        with st.spinner('Procesando documentos legales y analizando geometría...'):
+        with st.spinner('Procesando datos y analizando geometría...'):
             try:
                 # --- A. PROCESAMIENTO IA ---
                 contenido_a_enviar = []
@@ -111,10 +116,10 @@ if st.button("🚀 Procesar y Comparar Proyecto", use_container_width=True):
                 coord_y_ia_cerrado = coord_y_ia + [coord_y_ia[0]]
                 area_ia = calcular_area(coord_x_ia_cerrado, coord_y_ia_cerrado)
 
-                # --- C. EXTRACCIÓN DXF PROFESIONAL (COMPARATIVO) ---
+                # --- C. EXTRACCIÓN DXF PROFESIONAL (SOLO SI SE PRESIONÓ COMPARAR) ---
                 coord_x_prof, coord_y_prof = None, None
                 area_prof = 0.0
-                if archivo_dxf_prof is not None:
+                if btn_comparar and archivo_dxf_prof is not None:
                     coord_x_prof_raw, coord_y_prof_raw = extraer_poligono_dxf(archivo_dxf_prof)
                     if coord_x_prof_raw and len(coord_x_prof_raw) > 2:
                         area_prof = calcular_area(coord_x_prof_raw, coord_y_prof_raw)
@@ -126,59 +131,52 @@ if st.button("🚀 Procesar y Comparar Proyecto", use_container_width=True):
                 # --- D. VISUALIZACIÓN Y RESULTADOS ---
                 st.success("¡Análisis completado exitosamente!")
                 
-                st.markdown("### 📊 Comparativo de Superficies")
-                met1, met2, met3 = st.columns(3)
-                met1.metric(label="Área Legal (Según Escritura/IA)", value=f"{area_ia:,.2f} m²")
-                
-                if coord_x_prof:
+                if btn_comparar and coord_x_prof:
+                    st.markdown("### 📊 Comparativo de Superficies")
+                    met1, met2, met3 = st.columns(3)
+                    met1.metric(label="Área Legal (IA)", value=f"{area_ia:,.2f} m²")
                     diferencia = area_prof - area_ia
                     met2.metric(label="Área Dibujada (Topógrafo)", value=f"{area_prof:,.2f} m²", delta=f"{diferencia:,.2f} m²", delta_color="inverse")
                     if abs(diferencia) > 1.0:
-                        met3.error("⚠️ Discrepancia detectada. Revisa los vértices.")
+                        met3.error("⚠️ Discrepancia detectada.")
                     else:
-                        met3.success("✅ Las áreas coinciden dentro del margen de tolerancia.")
+                        met3.success("✅ Las áreas coinciden.")
                 else:
-                    met2.metric(label="Área Dibujada (Topógrafo)", value="No se subió archivo")
+                    st.markdown("### 📊 Resultados de Superficie")
+                    st.metric(label="Área Legal Estimada (Según Escritura/IA)", value=f"{area_ia:,.2f} m²")
 
-                st.markdown("### 🗺️ Superposición de Planos")
+                st.markdown("### 🗺️ Visualización de la Poligonal")
                 fig, ax = plt.subplots(figsize=(10, 10))
                 
                 # Dibujar IA
-                ax.plot(coord_x_ia, coord_y_ia, color='blue', linestyle='-', linewidth=2, label='Legal (IA)')
+                ax.plot(coord_x_ia, coord_y_ia, color='blue', linestyle='-', linewidth=2, label='Legal (IA)' if btn_comparar else 'Poligonal Generada')
                 ax.fill(coord_x_ia, coord_y_ia, color='blue', alpha=0.1)
                 
-                # Marcar e identificar Mojones en el gráfico web
-                for i in range(len(coord_x_ia) - 1): # -1 para no duplicar la etiqueta en el punto de cierre
+                for i in range(len(coord_x_ia) - 1): 
                     px, py = coord_x_ia[i], coord_y_ia[i]
                     ax.plot(px, py, marker='o', color='darkgreen', markersize=6)
                     ax.text(px, py, f"  M{i+1}", fontsize=10, color='darkgreen', fontweight='bold', va='bottom')
 
                 # Dibujar Profesional si existe
-                if coord_x_prof:
+                if btn_comparar and coord_x_prof:
                     ax.plot(coord_x_prof, coord_y_prof, marker='x', color='red', linestyle='--', linewidth=2, label='Topógrafo (DXF)')
                     ax.fill(coord_x_prof, coord_y_prof, color='red', alpha=0.1)
+                    ax.legend(loc="upper right")
 
                 ax.grid(True, linestyle='--', alpha=0.6)
                 ax.axis('equal')
-                ax.legend(loc="upper right")
                 st.pyplot(fig)
 
-                # --- E. GENERAR DXF PARA DESCARGA (SOLO IA) ---
+                # --- E. GENERAR DXF PARA DESCARGA ---
                 doc = ezdxf.new('R2010')
                 msp = doc.modelspace()
+                msp.add_lwpolyline(list(zip(coord_x_ia, coord_y_ia)), dxfattribs={'color': 5})
                 
-                # Dibujar líneas del polígono
-                msp.add_lwpolyline(list(zip(coord_x_ia, coord_y_ia)), dxfattribs={'color': 5}) # Azul
-                
-                # Insertar los Mojones en el DXF
                 for i in range(len(coord_x_ia) - 1):
                     px, py = coord_x_ia[i], coord_y_ia[i]
-                    # Círculo para representar el mojón
-                    msp.add_circle((px, py), radius=0.5, dxfattribs={'color': 2}) # Amarillo
-                    # Etiqueta de texto (M1, M2...)
+                    msp.add_circle((px, py), radius=0.5, dxfattribs={'color': 2})
                     msp.add_text(f"M{i+1}", dxfattribs={'height': 1.5, 'color': 3}).set_placement((px + 1, py + 1))
 
-                # Cuadro de Construcción
                 max_x, max_y = max(coord_x_ia), max(coord_y_ia)
                 cuadro_x, cuadro_y = max_x + 15, max_y
                 
@@ -190,7 +188,6 @@ if st.button("🚀 Procesar y Comparar Proyecto", use_container_width=True):
                 cuadro_y -= 2.5
                 
                 for i, tramo in enumerate(datos_terreno):
-                    # Calcular el nombre del tramo basado en los mojones
                     mojon_inicio = i + 1
                     mojon_fin = i + 2 if i < len(datos_terreno) - 1 else 1
                     texto_tramo = f"M{mojon_inicio} a M{mojon_fin}"
@@ -203,7 +200,7 @@ if st.button("🚀 Procesar y Comparar Proyecto", use_container_width=True):
                 nombre_archivo = "Poligonal_Legal_InspecAI.dxf"
                 doc.saveas(nombre_archivo)
                 with open(nombre_archivo, "rb") as file:
-                    st.download_button(label="📥 Descargar Archivo DXF (Plano Legal IA)", data=file, file_name=nombre_archivo, mime="application/dxf")
+                    st.download_button(label="📥 Descargar Archivo DXF", data=file, file_name=nombre_archivo, mime="application/dxf")
 
             except Exception as e:
                 st.error(f"Hubo un error al procesar el documento. Detalle: {e}")
