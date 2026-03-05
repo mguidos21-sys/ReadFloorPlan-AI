@@ -33,8 +33,8 @@ def extraer_poligono_dxf(file_stream):
     return None, None
 
 # --- 1. CONFIGURACIÓN DE LA APP ---
-st.set_page_config(page_title="Inspec.AI - Auditoría", layout="wide")
-st.title("🏗️ Inspec.AI: Generador y Auditor de Poligonales")
+st.set_page_config(page_title="Inspec.AI - Comparativo", layout="wide")
+st.title("🏗️ Inspec.AI: Generador y Comparador de Poligonales")
 st.write("Genera poligonales limpias con identificación de mojones y compáralas con los planos CAD de tus contratistas.")
 
 # --- 2. CONEXIÓN API ---
@@ -62,11 +62,11 @@ with col1:
     texto_escritura = st.text_area("📄 O pega el texto manualmente:", height=100)
 
 with col2:
-    st.subheader("2. Auditoría (Opcional)")
+    st.subheader("2. Comparativo (Opcional)")
     archivo_dxf_prof = st.file_uploader("📂 Sube el plano del topógrafo (.dxf) para cotejar", type=["dxf"], key="dxf_prof")
     st.info("Pídele al dibujante que guarde su DWG de AutoCAD usando 'Guardar como -> DXF' antes de subirlo.")
 
-if st.button("🚀 Procesar y Auditar Proyecto", use_container_width=True):
+if st.button("🚀 Procesar y Comparar Proyecto", use_container_width=True):
     if archivo_pdf is None and not texto_escritura.strip():
         st.warning("Por favor, sube la escritura o ingresa el texto primero en la columna izquierda.")
     else:
@@ -111,7 +111,7 @@ if st.button("🚀 Procesar y Auditar Proyecto", use_container_width=True):
                 coord_y_ia_cerrado = coord_y_ia + [coord_y_ia[0]]
                 area_ia = calcular_area(coord_x_ia_cerrado, coord_y_ia_cerrado)
 
-                # --- C. EXTRACCIÓN DXF PROFESIONAL (AUDITORÍA) ---
+                # --- C. EXTRACCIÓN DXF PROFESIONAL (COMPARATIVO) ---
                 coord_x_prof, coord_y_prof = None, None
                 area_prof = 0.0
                 if archivo_dxf_prof is not None:
@@ -126,7 +126,7 @@ if st.button("🚀 Procesar y Auditar Proyecto", use_container_width=True):
                 # --- D. VISUALIZACIÓN Y RESULTADOS ---
                 st.success("¡Análisis completado exitosamente!")
                 
-                st.markdown("### 📊 Auditoría de Superficies")
+                st.markdown("### 📊 Comparativo de Superficies")
                 met1, met2, met3 = st.columns(3)
                 met1.metric(label="Área Legal (Según Escritura/IA)", value=f"{area_ia:,.2f} m²")
                 
