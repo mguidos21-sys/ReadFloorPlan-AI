@@ -35,7 +35,7 @@ def extraer_poligono_dxf(file_stream):
 # --- 1. CONFIGURACIÓN DE LA APP ---
 st.set_page_config(page_title="Inspec.AI", layout="wide")
 st.title("🏗️ Inspec.AI: Generador y Comparador de Poligonales")
-st.write("Genera poligonales a partir de documentos legales y, de forma opcional, compáralas con los planos CAD de tus contratistas.")
+st.write("Genera poligonales a partir de documentos legales y, opcionalmente, compáralas con los planos CAD de tus contratistas.")
 
 # --- 2. CONEXIÓN API ---
 try:
@@ -45,12 +45,17 @@ except KeyError:
     st.error("Falta configurar la llave de la API.")
     st.stop()
 
+# --- AQUÍ ESTABA EL ERROR: RESTAURAMOS EL MOLDE ESTRICTO DEL JSON ---
 instrucciones_agente = """
 Eres Inspec.AI, un experto revisor de proyectos arquitectónicos. 
-Tu tarea es analizar documentos o descripciones técnicas y extraer CADA tramo de los linderos, su distancia en metros y el rumbo.
+Tu tarea es analizar documentos (incluso escrituras escaneadas) y extraer CADA tramo de los linderos, su distancia en metros y el rumbo.
 Debes calcular el azimut en grados decimales.
 Formatea el rumbo a GMS (Ejemplo: "N 28° 39' 11\" W").
 Responde ÚNICAMENTE con un arreglo en formato JSON válido, sin texto adicional.
+Estructura ESTRICTAMENTE requerida:
+[
+  {"tramo": "Norte 1", "distancia": 18.31, "rumbo_formateado": "S 89° 10' 15\" E", "azimut": 90.829}
+]
 """
 modelo_inspec = genai.GenerativeModel('gemini-2.5-flash', system_instruction=instrucciones_agente)
 
@@ -75,7 +80,7 @@ if btn_generar or btn_comparar:
     elif archivo_pdf is None and not texto_escritura.strip():
         st.warning("⚠️ Por favor, sube la escritura o ingresa el texto primero en la columna izquierda.")
     else:
-        with st.spinner('Procesando datos y analizando geometría...'):
+        with st.spinner('Leyendo la escritura y calculando topografía...'):
             try:
                 # --- A. PROCESAMIENTO IA ---
                 contenido_a_enviar = []
@@ -99,24 +104,36 @@ if btn_generar or btn_comparar:
                 texto_json = respuesta.text.strip().strip('```json').strip('```')
                 datos_terreno = json.loads(texto_json)
                 
+                if not datos_terreno:
+                    st.error("⚠️ La IA no pudo extraer los datos de este documento.")
+                    st.stop()
+                    
+                # Visor de datos para auditoría interna
+                with st.expander("🔍 Ver datos extraídos crudos (Auditoría de IA)"):
+                    st.json(datos_terreno)
+
                 # --- B. MOTOR MATEMÁTICO IA ---
                 x, y = 0.0, 0.0
                 coord_x_ia, coord_y_ia = [x], [y]
 
                 for tramo in datos_terreno:
-                    if tramo.get("azimut") is not None:
+                    # Validamos que existan las claves exactas
+                    if tramo.get("azimut") is not None and tramo.get("distancia") is not None:
                         azimut_rad = math.radians(tramo["azimut"])
                         x += tramo["distancia"] * math.sin(azimut_rad)
                         y += tramo["distancia"] * math.cos(azimut_rad)
                         coord_x_ia.append(x)
                         coord_y_ia.append(y)
 
-                # Cerrar polígono IA para cálculo de área
+                if len(coord_x_ia) <= 1:
+                    st.error("⚠️ No se pudieron generar coordenadas. Revisa los datos extraídos en el visor superior.")
+                    st.stop()
+
                 coord_x_ia_cerrado = coord_x_ia + [coord_x_ia[0]]
                 coord_y_ia_cerrado = coord_y_ia + [coord_y_ia[0]]
                 area_ia = calcular_area(coord_x_ia_cerrado, coord_y_ia_cerrado)
 
-                # --- C. EXTRACCIÓN DXF PROFESIONAL (SOLO SI SE PRESIONÓ COMPARAR) ---
+                # --- C. EXTRACCIÓN DXF PROFESIONAL ---
                 coord_x_prof, coord_y_prof = None, None
                 area_prof = 0.0
                 if btn_comparar and archivo_dxf_prof is not None:
@@ -148,7 +165,6 @@ if btn_generar or btn_comparar:
                 st.markdown("### 🗺️ Visualización de la Poligonal")
                 fig, ax = plt.subplots(figsize=(10, 10))
                 
-                # Dibujar IA
                 ax.plot(coord_x_ia, coord_y_ia, color='blue', linestyle='-', linewidth=2, label='Legal (IA)' if btn_comparar else 'Poligonal Generada')
                 ax.fill(coord_x_ia, coord_y_ia, color='blue', alpha=0.1)
                 
@@ -157,7 +173,6 @@ if btn_generar or btn_comparar:
                     ax.plot(px, py, marker='o', color='darkgreen', markersize=6)
                     ax.text(px, py, f"  M{i+1}", fontsize=10, color='darkgreen', fontweight='bold', va='bottom')
 
-                # Dibujar Profesional si existe
                 if btn_comparar and coord_x_prof:
                     ax.plot(coord_x_prof, coord_y_prof, marker='x', color='red', linestyle='--', linewidth=2, label='Topógrafo (DXF)')
                     ax.fill(coord_x_prof, coord_y_prof, color='red', alpha=0.1)
