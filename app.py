@@ -4,12 +4,13 @@ import json
 import math
 import matplotlib.pyplot as plt
 import ezdxf
-import PyPDF2
+import os
+import tempfile
 
 # 1. Configuración de la App
 st.set_page_config(page_title="Inspec.AI - Poligonales", layout="wide")
 st.title("🏗️ Inspec.AI: Generador Automático de Poligonales")
-st.write("Sube tu documento en PDF o pega la descripción técnica del terreno para generar el archivo CAD.")
+st.write("Sube tu escritura en PDF (incluso documentos escaneados) o pega la descripción técnica para generar el archivo CAD.")
 
 # 2. Conectar la API
 try:
@@ -22,7 +23,8 @@ except KeyError:
 # 3. Instrucciones del Agente
 instrucciones_agente = """
 Eres Inspec.AI, un experto revisor de proyectos arquitectónicos. 
-Tu tarea es leer descripciones técnicas y extraer cada tramo, su distancia en metros, el texto exacto del rumbo y calcular su equivalente en azimut en grados decimales.
+Tu tarea es analizar documentos o descripciones técnicas y extraer CADA tramo de los linderos, su distancia en metros, el texto exacto del rumbo y calcular su equivalente en azimut en grados decimales.
+Si recibes un documento escaneado, lee cuidadosamente el texto de la imagen para extraer esta información topográfica.
 Responde ÚNICAMENTE con un arreglo en formato JSON válido, sin texto adicional.
 Estructura esperada:
 [
@@ -31,38 +33,52 @@ Estructura esperada:
 """
 modelo_inspec = genai.GenerativeModel('gemini-2.5-flash', system_instruction=instrucciones_agente)
 
-# 4. Interfaz de Usuario: Carga de PDF y Texto
-texto_preliminar = ""
-
-# Widget para subir PDF
-archivo_pdf = st.file_uploader("📂 Sube la escritura en formato PDF (Opcional)", type=["pdf"])
-
-if archivo_pdf is not None:
-    try:
-        lector_pdf = PyPDF2.PdfReader(archivo_pdf)
-        for pagina in lector_pdf.pages:
-            texto_extraido = pagina.extract_text()
-            if texto_extraido:
-                texto_preliminar += texto_extraido + "\n"
-        st.success("✅ PDF leído correctamente. Revisa el texto extraído abajo.")
-    except Exception as e:
-        st.error(f"Hubo un error al leer el PDF: {e}")
-
-# Cuadro de texto (se llena automáticamente si se sube un PDF)
-texto_escritura = st.text_area("📄 Texto de la Escritura (Edita o pega texto manualmente):", value=texto_preliminar, height=250)
+# 4. Interfaz de Usuario
+archivo_pdf = st.file_uploader("📂 Sube la escritura en formato PDF", type=["pdf"])
+texto_escritura = st.text_area("📄 O pega el texto manualmente aquí (si no tienes el PDF):", height=150)
 
 if st.button("🚀 Procesar y Generar DXF"):
-    if not texto_escritura.strip():
-        st.warning("Por favor, sube un PDF o ingresa el texto del documento primero.")
+    if archivo_pdf is None and not texto_escritura.strip():
+        st.warning("Por favor, sube un archivo PDF o ingresa el texto primero.")
     else:
-        with st.spinner('Analizando texto y calculando geometría...'):
+        with st.spinner('La IA está leyendo el documento y calculando la geometría. Esto puede tomar unos segundos...'):
             try:
-                # Análisis de la IA
-                respuesta = modelo_inspec.generate_content(texto_escritura)
+                # 5. Preparar lo que le enviaremos a la IA
+                contenido_a_enviar = []
+                
+                # Si escribió texto manual, lo agregamos
+                if texto_escritura.strip():
+                    contenido_a_enviar.append(texto_escritura)
+                
+                # Si subió un PDF, lo procesamos con la API de Archivos de Gemini
+                pdf_subido = None
+                temp_pdf_path = None
+                if archivo_pdf is not None:
+                    # Guardamos el archivo temporalmente en el servidor
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
+                        temp_file.write(archivo_pdf.getbuffer())
+                        temp_pdf_path = temp_file.name
+                    
+                    # Subimos el PDF a los servidores de Gemini para que lo pueda "ver"
+                    pdf_subido = genai.upload_file(temp_pdf_path, mime_type="application/pdf")
+                    contenido_a_enviar.append(pdf_subido)
+
+                # 6. Enviamos el paquete a Inspec.AI
+                respuesta = modelo_inspec.generate_content(contenido_a_enviar)
+                
+                # Limpieza de archivos temporales por seguridad
+                if pdf_subido is not None:
+                    genai.delete_file(pdf_subido.name)
+                    os.remove(temp_pdf_path)
+
+                # 7. Procesamiento Matemático
                 texto_json = respuesta.text.strip().strip('```json').strip('```')
                 datos_terreno = json.loads(texto_json)
                 
-                # Motor Matemático
+                if not datos_terreno:
+                    st.error("La IA no pudo encontrar rumbos ni distancias en este documento.")
+                    st.stop()
+                
                 x, y = 0.0, 0.0
                 coordenadas_x, coordenadas_y = [x], [y]
 
@@ -74,7 +90,7 @@ if st.button("🚀 Procesar y Generar DXF"):
                         coordenadas_x.append(x)
                         coordenadas_y.append(y)
 
-                # Exportación a DXF con Cuadro
+                # 8. Generación del DXF y el Cuadro
                 doc = ezdxf.new('R2010')
                 msp = doc.modelspace()
                 msp.add_lwpolyline(list(zip(coordenadas_x, coordenadas_y)), dxfattribs={'color': 1})
@@ -101,7 +117,6 @@ if st.button("🚀 Procesar y Generar DXF"):
                 nombre_archivo = "Poligonal_InspecAI.dxf"
                 doc.saveas(nombre_archivo)
                 
-                # Mostrar éxito y botón de descarga
                 st.success("¡Análisis completado exitosamente!")
                 
                 with open(nombre_archivo, "rb") as file:
@@ -112,7 +127,6 @@ if st.button("🚀 Procesar y Generar DXF"):
                         mime="application/dxf"
                     )
                 
-                # Visualización en pantalla
                 st.subheader("Vista Previa")
                 fig, ax = plt.subplots(figsize=(6, 6))
                 ax.plot(coordenadas_x, coordenadas_y, marker='o', color='b', linestyle='-')
@@ -122,4 +136,5 @@ if st.button("🚀 Procesar y Generar DXF"):
                 st.pyplot(fig)
 
             except Exception as e:
-                st.error(f"Hubo un error al interpretar el texto. Revisa que el formato sea correcto. Detalle: {e}")
+                st.error(f"Hubo un error al procesar el documento. Detalle: {e}")
+
