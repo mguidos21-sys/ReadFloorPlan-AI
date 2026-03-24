@@ -42,7 +42,7 @@ def extraer_poligono_dxf(file_stream):
         return None, None
     return None, None
 
-# --- AGENTES DE IA (AQUÍ ESTÁ LA NUEVA REGLA DE CURVAS) ---
+# --- AGENTES DE IA ---
 instrucciones_topografia = """
 Eres un experto revisor de proyectos arquitectónicos. Extrae CADA tramo, distancia en metros y el rumbo de los documentos o imágenes.
 REGLA PARA CURVAS: Si un tramo es curvo, debes buscar y extraer estrictamente los datos de su "CUERDA" (rumbo y distancia de la cuerda) para usarlos como valores principales.
@@ -119,7 +119,6 @@ with tab1:
                     ax.plot(px, py, marker='o', color='darkgreen', markersize=6)
                     texto_mojon = f"  M{i+1}"
                     
-                    # Identificador visual de curvas
                     if i < len(datos) and datos[i].get("es_curva", False):
                         radio = datos[i].get("radio", "N/A")
                         texto_mojon += f"\n  (Curva R={radio})"
@@ -154,7 +153,6 @@ with tab1:
                     mojon_inicio = i + 1
                     mojon_fin = i + 2 if i < len(datos) - 1 else 1
                     
-                    # Si es curva, lo indicamos en el DXF
                     nota_curva = " (Cuerda)" if tramo.get("es_curva", False) else ""
                     texto_tramo = f"M{mojon_inicio} a M{mojon_fin}{nota_curva}"
                     
@@ -214,7 +212,6 @@ with tab3:
     if st.button("⚖️ Ejecutar Comparativo", key="btn_comp_cad"):
         if arch_legal_cad and arch_dxf_prof:
             st.info("Función de superposición lista para integrarse.")
-            # Aquí irá la lógica de superposición que ya programamos antes.
         else:
             st.warning("Sube ambos archivos para realizar la comparación matemática.")
 
@@ -225,4 +222,48 @@ with tab4:
     
     col_lat, col_lon = st.columns(2)
     with col_lat: lat_inicio = st.number_input("Latitud Inicial (Ej. 13.698)", value=13.698000, format="%.6f")
-    with col_lon: lon_inicio = st.number_input("Longitud Inicial (Ej. -89.145)", value=-89.
+    with col_lon: lon_inicio = st.number_input("Longitud Inicial (Ej. -89.145)", value=-89.145000, format="%.6f")
+    
+    arch_mapa = st.file_uploader("Sube la escritura para trazar el mapa", type=["pdf", "jpg", "png"], key="map_file")
+    
+    if st.button("🌍 Proyectar en Mapa", key="btn_mapa"):
+        if arch_mapa:
+            with st.spinner("Calculando coordenadas geográficas..."):
+                with tempfile.NamedTemporaryFile(delete=False, suffix=f".{arch_mapa.name.split('.')[-1]}") as tf:
+                    tf.write(arch_mapa.getbuffer())
+                    temp_path = tf.name
+                
+                upload = genai.upload_file(temp_path)
+                respuesta = modelo_topografo.generate_content([upload])
+                genai.delete_file(upload.name)
+                os.remove(temp_path)
+                
+                datos = json.loads(respuesta.text.strip().strip('```json').strip('```'))
+                
+                puntos_gps = [(lat_inicio, lon_inicio)]
+                lat_actual, lon_actual = lat_inicio, lon_inicio
+                R_TIERRA = 111320.0 
+                
+                for t in datos:
+                    if t.get("azimut") is not None:
+                        az_rad = math.radians(t["azimut"])
+                        dist = t["distancia"]
+                        
+                        delta_y = dist * math.cos(az_rad)
+                        delta_x = dist * math.sin(az_rad)
+                        
+                        delta_lat = delta_y / R_TIERRA
+                        delta_lon = delta_x / (R_TIERRA * math.cos(math.radians(lat_actual)))
+                        
+                        lat_actual += delta_lat
+                        lon_actual += delta_lon
+                        puntos_gps.append((lat_actual, lon_actual))
+                
+                m = folium.Map(location=[lat_inicio, lon_inicio], zoom_start=18, tiles="Esri.WorldImagery")
+                folium.Polygon(locations=puntos_gps, color="cyan", weight=3, fill=True, fill_color="blue", fill_opacity=0.3).add_to(m)
+                folium.Marker([lat_inicio, lon_inicio], tooltip="M1 (Punto de Inicio)", icon=folium.Icon(color="red")).add_to(m)
+                
+                st.success("Terreno proyectado exitosamente.")
+                st_data = st_folium(m, width=800, height=500)
+        else:
+            st.warning("Sube la escritura para poder trazar el polígono.")
