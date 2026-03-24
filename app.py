@@ -10,8 +10,8 @@ import folium
 from streamlit_folium import st_folium
 
 # --- 1. CONFIGURACIÓN Y FUNCIONES BASE ---
-st.set_page_config(page_title="Comparativo AI", layout="wide")
-st.title("🏗️ Comparativo: Suite de Análisis Topográfico")
+st.set_page_config(page_title="Graphitop", layout="wide")
+st.title("🏗️ GraphiTop: Suite de Análisis Topográfico")
 
 try:
     GOOGLE_API_KEY = st.secrets["GEMINI_API_KEY"]
