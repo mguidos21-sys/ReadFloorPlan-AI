@@ -10,7 +10,7 @@ import folium
 from streamlit_folium import st_folium
 import re
 
-# --- 1. CONFIGURACIÓN Y MEMORIA ---
+# --- 1. CONFIGURACIÓN Y FUNCIONES BASE ---
 st.set_page_config(page_title="GraphiTop", layout="wide")
 st.title("🏗️ GraphiTop: Suite de Análisis Topográfico")
 
@@ -46,25 +46,34 @@ def extraer_poligono_dxf(file_stream):
     return None, None
 
 def rumbo_a_azimut(rumbo_str):
+    """NUEVO TRADUCTOR INDESTRUCTIBLE: Encuentra los números sin importar los símbolos."""
     try:
         r = str(rumbo_str).upper()
         r = r.replace('NORTE', 'N').replace('SUR', 'S').replace('ESTE', 'E').replace('OESTE', 'W')
         
+        # 1. Identificar cuadrante
         ns = 'N' if 'N' in r else ('S' if 'S' in r else None)
         ew = 'E' if 'E' in r else ('W' if 'W' in r else None)
-        if not ns or not ew: return 0.0
+        
+        if not ns or not ew:
+            return 0.0 # Fallback si no hay cuadrante
 
+        # 2. Extraer solo los números (grados, minutos, segundos) sin importar los símbolos entre ellos
         nums = re.findall(r"[\d.]+", r.replace(',', '.'))
+        
         grados = float(nums[0]) if len(nums) > 0 else 0.0
         minutos = float(nums[1]) if len(nums) > 1 else 0.0
         segundos = float(nums[2]) if len(nums) > 2 else 0.0
+
         grados_dec = grados + (minutos / 60.0) + (segundos / 3600.0)
 
+        # 3. Calcular Azimut basado en el cuadrante
         if ns == 'N' and ew == 'E': return grados_dec
         if ns == 'S' and ew == 'E': return 180.0 - grados_dec
         if ns == 'S' and ew == 'W': return 180.0 + grados_dec
         if ns == 'N' and ew == 'W': return 360.0 - grados_dec
-    except Exception: return 0.0
+    except Exception:
+        return 0.0
     return 0.0
 
 def extraer_json_seguro(texto_ia):
@@ -125,11 +134,9 @@ with tab1:
             dist_cruda = str(t.get("distancia", "0")).replace(',', '.').replace('m', '').replace(' ', '')
             try: dist = float(dist_cruda)
             except ValueError: dist = 0.0
-            
-            rumbo_texto = t.get("rumbo", t.get("rumbo_formateado", ""))
-            azimut_calculado = rumbo_a_azimut(rumbo_texto)
+                
+            azimut_calculado = rumbo_a_azimut(t.get("rumbo", ""))
             az_rad = math.radians(azimut_calculado)
-            
             x += dist * math.sin(az_rad)
             y += dist * math.cos(az_rad)
             cx.append(x)
@@ -193,8 +200,6 @@ with tab1:
                 nota_curva = " (Cuerda)" if t.get("es_curva", False) else ""
                 rumbo_texto = str(t.get('rumbo', t.get('rumbo_formateado', 'FALTA'))) + nota_curva
                 dist_texto = f"{t.get('distancia', '0')} m"
-                
-                # Las coordenadas calculadas para ese mojón
                 coord_x_texto = f"{cx[i]:.3f}"
                 coord_y_texto = f"{cy[i]:.3f}"
                 
