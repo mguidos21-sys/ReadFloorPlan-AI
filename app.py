@@ -47,12 +47,10 @@ def rumbo_a_azimut(rumbo_str):
     """Traductor indestructible: Encuentra los números sin importar los símbolos."""
     try:
         r = str(rumbo_str).upper()
-        # Identificar cuadrante
         ns = 'N' if 'N' in r else ('S' if 'S' in r else None)
         ew = 'E' if 'E' in r else ('W' if 'W' in r else None)
         if not ns or not ew: return 0.0
 
-        # Extraer solo los números (grados, minutos, segundos)
         nums = re.findall(r"[\d.]+", r)
         grados = float(nums[0]) if len(nums) > 0 else 0.0
         minutos = float(nums[1]) if len(nums) > 1 else 0.0
@@ -68,14 +66,25 @@ def rumbo_a_azimut(rumbo_str):
         return 0.0
     return 0.0
 
+def extraer_json_seguro(texto_ia):
+    """Filtra cualquier texto extra de la IA y extrae solo el arreglo JSON."""
+    try:
+        match = re.search(r'\[.*\]', texto_ia, re.DOTALL)
+        if match:
+            return json.loads(match.group(0))
+        return []
+    except Exception:
+        return []
+
 # --- AGENTES DE IA ---
 instrucciones_topografia = """
-Eres un experto topógrafo. Tu ÚNICA tarea es extraer los linderos de la escritura o plano.
-NO calcules nada. Solo copia el rumbo y la distancia EXACTAMENTE como aparecen.
-REGLA CURVAS: Si el tramo es curvo, extrae rumbo y distancia de su CUERDA, y anota el RADIO.
-Responde ÚNICAMENTE con JSON:
+Eres un sistema autómata de extracción de datos topográficos.
+Tu ÚNICA salida debe ser un arreglo JSON válido. NADA DE TEXTO ANTES NI DESPUÉS.
+Extrae el rumbo y la distancia EXACTAMENTE como aparecen. 
+Si hay curva, extrae los datos de la CUERDA.
+Formato ESTRICTO:
 [
-  {"tramo": "Norte 1", "distancia": 18.31, "rumbo": "S 89 10 15 E", "es_curva": false, "radio": 0}
+  {"tramo": "L1", "distancia": 15.5, "rumbo": "N 20 15 00 W", "es_curva": false, "radio": 0}
 ]
 """
 modelo_topografo = genai.GenerativeModel('gemini-2.5-flash', system_instruction=instrucciones_topografia)
@@ -98,7 +107,7 @@ with tab1:
     
     if st.button("🚀 Extraer y Generar DXF", key="btn_gen"):
         if arch_gen:
-            with st.spinner("Procesando linderos..."):
+            with st.spinner("Procesando linderos con precisión..."):
                 with tempfile.NamedTemporaryFile(delete=False, suffix=f".{arch_gen.name.split('.')[-1]}") as tf:
                     tf.write(arch_gen.getbuffer())
                     temp_path = tf.name
@@ -108,60 +117,65 @@ with tab1:
                 genai.delete_file(upload.name)
                 os.remove(temp_path)
                 
-                try:
-                    datos = json.loads(respuesta.text.replace('```json', '').replace('```', '').strip())
-                except:
-                    st.error("Error al leer el documento.")
+                datos = extraer_json_seguro(respuesta.text)
+                
+                if not datos:
+                    st.error("La IA no pudo formatear los datos correctamente. Intenta subir el archivo de nuevo.")
                     st.stop()
                 
-                with st.expander("🔍 Ver datos extraídos"):
+                with st.expander("🔍 Ver datos extraídos (Auditoría)"):
                     st.json(datos)
 
                 x, y = 0.0, 0.0
                 cx, cy = [x], [y]
                 for t in datos:
-                    azimut_calculado = rumbo_a_azimut(t["rumbo"])
+                    dist = float(t.get("distancia", 0))
+                    azimut_calculado = rumbo_a_azimut(t.get("rumbo", ""))
                     az_rad = math.radians(azimut_calculado)
-                    x += t["distancia"] * math.sin(az_rad)
-                    y += t["distancia"] * math.cos(az_rad)
+                    x += dist * math.sin(az_rad)
+                    y += dist * math.cos(az_rad)
                     cx.append(x)
                     cy.append(y)
                 
-                fig, ax = plt.subplots(figsize=(8,8))
-                for i in range(len(cx) - 1):
-                    px, py = cx[i], cy[i]
-                    nx, ny = cx[i+1], cy[i+1]
-                    es_curva = i < len(datos) and datos[i].get("es_curva", False)
-                    estilo = '--' if es_curva else '-'
-                    color_linea = 'red' if es_curva else 'blue'
-                    
-                    ax.plot([px, nx], [py, ny], color=color_linea, linestyle=estilo, linewidth=2)
-                    ax.plot(px, py, marker='o', color='darkgreen', markersize=6)
-                    texto_mojon = f" M{i+1}"
-                    if es_curva: texto_mojon += f"\n (R={datos[i].get('radio', 'N/A')})"
-                    ax.text(px, py, texto_mojon, fontsize=9, color='darkgreen', fontweight='bold')
+                if len(cx) > 1:
+                    fig, ax = plt.subplots(figsize=(8,8))
+                    for i in range(len(cx) - 1):
+                        px, py = cx[i], cy[i]
+                        nx, ny = cx[i+1], cy[i+1]
+                        es_curva = i < len(datos) and datos[i].get("es_curva", False)
+                        estilo = '--' if es_curva else '-'
+                        color_linea = 'red' if es_curva else 'blue'
+                        
+                        ax.plot([px, nx], [py, ny], color=color_linea, linestyle=estilo, linewidth=2)
+                        ax.plot(px, py, marker='o', color='darkgreen', markersize=6)
+                        texto_mojon = f" M{i+1}"
+                        if es_curva: texto_mojon += f"\n (R={datos[i].get('radio', 'N/A')})"
+                        ax.text(px, py, texto_mojon, fontsize=9, color='darkgreen', fontweight='bold')
 
-                ax.fill(cx, cy, color='blue', alpha=0.05)
-                ax.axis('equal')
-                ax.grid(True, linestyle=':', alpha=0.6)
-                st.pyplot(fig)
+                    ax.fill(cx, cy, color='blue', alpha=0.05)
+                    ax.axis('equal')
+                    ax.grid(True, linestyle=':', alpha=0.6)
+                    st.pyplot(fig)
 
-                doc = ezdxf.new('R2010')
-                msp = doc.modelspace()
-                for i in range(len(cx) - 1):
-                    px, py = cx[i], cy[i]
-                    nx, ny = cx[i+1], cy[i+1]
-                    es_curva = i < len(datos) and datos[i].get("es_curva", False)
-                    msp.add_line((px, py), (nx, ny), dxfattribs={'color': 1 if es_curva else 5})
-                    msp.add_circle((px, py), radius=0.5, dxfattribs={'color': 2})
-                    msp.add_text(f"M{i+1}", dxfattribs={'height': 1.5, 'color': 3}).set_placement((px + 1, py + 1))
+                    # Exportar a DXF
+                    doc = ezdxf.new('R2010')
+                    msp = doc.modelspace()
+                    for i in range(len(cx) - 1):
+                        px, py = cx[i], cy[i]
+                        nx, ny = cx[i+1], cy[i+1]
+                        es_curva = i < len(datos) and datos[i].get("es_curva", False)
+                        msp.add_line((px, py), (nx, ny), dxfattribs={'color': 1 if es_curva else 5})
+                        msp.add_circle((px, py), radius=0.5, dxfattribs={'color': 2})
+                        msp.add_text(f"M{i+1}", dxfattribs={'height': 1.5, 'color': 3}).set_placement((px + 1, py + 1))
 
-                nombre_archivo = "GraphiTop_Plano.dxf"
-                doc.saveas(nombre_archivo)
-                with open(nombre_archivo, "rb") as file:
-                    st.download_button("📥 Descargar Archivo DXF", data=file, file_name=nombre_archivo, mime="application/dxf")
+                    nombre_archivo = "GraphiTop_Plano.dxf"
+                    doc.saveas(nombre_archivo)
+                    with open(nombre_archivo, "rb") as file:
+                        st.download_button("📥 Descargar Archivo DXF", data=file, file_name=nombre_archivo, mime="application/dxf")
+                else:
+                    st.error("No se detectaron linderos suficientes para graficar.")
         else:
-            st.warning("Sube un archivo.")
+            st.warning("Por favor, sube un archivo.")
 
 # --- PESTAÑA 2: COMPARATIVO VISUAL ---
 with tab2:
@@ -202,7 +216,6 @@ with tab3:
     if st.button("⚖️ Ejecutar Comparativo", key="btn_comp_cad"):
         if arch_legal and arch_dxf:
             with st.spinner("Procesando y superponiendo geometrías..."):
-                # 1. Extraer IA
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tf:
                     tf.write(arch_legal.getbuffer())
                     temp_path = tf.name
@@ -212,19 +225,23 @@ with tab3:
                 genai.delete_file(upload.name)
                 os.remove(temp_path)
                 
-                datos = json.loads(respuesta.text.replace('```json', '').replace('```', '').strip())
+                datos = extraer_json_seguro(respuesta.text)
+                if not datos:
+                    st.error("No se pudo leer la escritura correctamente.")
+                    st.stop()
+                    
                 x, y = 0.0, 0.0
                 cx, cy = [x], [y]
                 for t in datos:
-                    azimut_calculado = rumbo_a_azimut(t["rumbo"])
+                    dist = float(t.get("distancia", 0))
+                    azimut_calculado = rumbo_a_azimut(t.get("rumbo", ""))
                     az_rad = math.radians(azimut_calculado)
-                    x += t["distancia"] * math.sin(az_rad)
-                    y += t["distancia"] * math.cos(az_rad)
+                    x += dist * math.sin(az_rad)
+                    y += dist * math.cos(az_rad)
                     cx.append(x)
                     cy.append(y)
                 area_ia = calcular_area(cx, cy)
 
-                # 2. Extraer Topógrafo
                 coord_x_prof_raw, coord_y_prof_raw = extraer_poligono_dxf(arch_dxf)
                 if coord_x_prof_raw and len(coord_x_prof_raw) > 2:
                     area_prof = calcular_area(coord_x_prof_raw, coord_y_prof_raw)
@@ -233,7 +250,6 @@ with tab3:
                     coord_x_prof = [px - offset_x for px in coord_x_prof_raw]
                     coord_y_prof = [py - offset_y for py in coord_y_prof_raw]
                     
-                    # 3. Mostrar Resultados
                     st.markdown("### 📊 Comparativo de Superficies")
                     met1, met2, met3 = st.columns(3)
                     met1.metric(label="Área Legal (IA)", value=f"{area_ia:,.2f} m²")
@@ -265,7 +281,7 @@ with tab4:
     
     if st.button("🌍 Proyectar en Mapa", key="btn_mapa"):
         if arch_mapa:
-            with st.spinner("Calculando trigonometría esférica..."):
+            with st.spinner("Calculando proyecciones satelitales..."):
                 with tempfile.NamedTemporaryFile(delete=False, suffix=f".{arch_mapa.name.split('.')[-1]}") as tf:
                     tf.write(arch_mapa.getbuffer())
                     temp_path = tf.name
@@ -275,10 +291,9 @@ with tab4:
                 genai.delete_file(upload.name)
                 os.remove(temp_path)
                 
-                try:
-                    datos = json.loads(respuesta.text.replace('```json', '').replace('```', '').strip())
-                except:
-                    st.error("Error al extraer los datos.")
+                datos = extraer_json_seguro(respuesta.text)
+                if not datos:
+                    st.error("Error al extraer coordenadas. Revisa el documento.")
                     st.stop()
                 
                 puntos_gps = [(lat_inicio, lon_inicio)]
@@ -286,9 +301,9 @@ with tab4:
                 R_TIERRA = 111320.0 
                 
                 for t in datos:
-                    azimut_calculado = rumbo_a_azimut(t["rumbo"])
+                    dist = float(t.get("distancia", 0))
+                    azimut_calculado = rumbo_a_azimut(t.get("rumbo", ""))
                     az_rad = math.radians(azimut_calculado)
-                    dist = t["distancia"]
                     
                     delta_y = dist * math.cos(az_rad)
                     delta_x = dist * math.sin(az_rad)
@@ -300,11 +315,16 @@ with tab4:
                     lon_actual += delta_lon
                     puntos_gps.append((lat_actual, lon_actual))
                 
+                # Crear el mapa y forzar el enfoque a tu terreno
                 m = folium.Map(location=[lat_inicio, lon_inicio], zoom_start=18, tiles="Esri.WorldImagery")
                 folium.Polygon(locations=puntos_gps, color="cyan", weight=3, fill=True, fill_color="blue", fill_opacity=0.3).add_to(m)
                 folium.Marker([lat_inicio, lon_inicio], tooltip="M1 (Punto de Inicio)", icon=folium.Icon(color="red")).add_to(m)
                 
+                # Auto-zoom para que no se quede en blanco
+                if len(puntos_gps) > 1:
+                    m.fit_bounds(puntos_gps)
+                
                 st.success("¡Terreno proyectado exitosamente!")
-                st_data = st_folium(m, width=800, height=500)
+                st_data = st_folium(m, use_container_width=True, height=500)
         else:
             st.warning("Sube un archivo primero.")
