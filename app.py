@@ -8,6 +8,13 @@ import os
 import tempfile
 import re
 
+# Intentamos importar la librería de mapas (Si falla, la app no se cae)
+try:
+    from pyproj import Transformer
+    PYPROJ_INSTALLED = True
+except ImportError:
+    PYPROJ_INSTALLED = False
+
 # --- 1. CONFIGURACIÓN Y MEMORIA ---
 st.set_page_config(page_title="GraphiTop", layout="wide")
 st.title("🏗️ GraphiTop: Suite de Análisis Topográfico")
@@ -44,7 +51,7 @@ def extraer_poligono_dxf(file_stream):
     return None, None
 
 def rumbo_a_azimut(rumbo_str):
-    """Traductor de emergencia por si la IA olvida calcular el azimut."""
+    """Traductor de emergencia si falla la IA."""
     try:
         r = str(rumbo_str).upper()
         r = r.replace('NORTE', 'N').replace('SUR', 'S').replace('ESTE', 'E').replace('ORIENTE', 'E').replace('OESTE', 'W').replace('PONIENTE', 'W')
@@ -97,7 +104,7 @@ with tab1:
     
     if st.button("🚀 Extraer Linderos y Dibujar", key="btn_gen"):
         if arch_gen:
-            with st.spinner("Leyendo documento y calculando azimuts..."):
+            with st.spinner("Leyendo documento y calculando azimuts (Esto evita que se dibuje recto)..."):
                 with tempfile.NamedTemporaryFile(delete=False, suffix=f".{arch_gen.name.split('.')[-1]}") as tf:
                     tf.write(arch_gen.getbuffer())
                     temp_path = tf.name
@@ -128,12 +135,11 @@ with tab1:
         
         for t in datos:
             t_lower = {k.lower(): v for k, v in t.items()}
-            
             dist_cruda = str(t_lower.get("distancia", "0")).replace(',', '.').replace('m', '')
             try: dist = float(dist_cruda)
             except ValueError: dist = 0.0
             
-            # MAGIA AQUÍ: Usamos el Azimut directo de la IA para evitar la línea recta
+            # Usamos el Azimut de la IA primero para obligar al polígono a formarse
             az_ia = t_lower.get("azimut", 0)
             if az_ia and float(az_ia) > 0:
                 azimut_calculado = float(az_ia)
@@ -215,19 +221,18 @@ with tab1:
                 with open(tmp_dxf.name, "rb") as f:
                     dxf_data = f.read()
             
-            st.download_button("📥 Descargar Archivo DXF Completo", data=dxf_data, file_name="GraphiTop_Plano.dxf", mime="application/dxf")
+            st.download_button("📥 Descargar Archivo DXF", data=dxf_data, file_name="GraphiTop_Plano.dxf", mime="application/dxf")
 
-# --- PESTAÑA 2: COMPARATIVO VISUAL (RESTAURADA) ---
+# --- PESTAÑA 2: COMPARATIVO VISUAL ---
 with tab2:
     st.header("Auditoría Visual de Planos")
-    st.write("Sube dos planos para que la IA busque diferencias estructurales o de sellos.")
     colA, colB = st.columns(2)
     with colA: arch_A = st.file_uploader("Plano A (Referencia)", type=["pdf", "jpg", "png"], key="vis_a")
     with colB: arch_B = st.file_uploader("Plano B (A Evaluar)", type=["pdf", "jpg", "png"], key="vis_b")
     
     if st.button("👁️ Comparar Visualmente", key="btn_vis"):
         if arch_A and arch_B:
-            with st.spinner("Analizando ambos planos con IA Visual..."):
+            with st.spinner("Analizando ambos planos..."):
                 files_del = []
                 docs_send = []
                 for f in [arch_A, arch_B]:
@@ -245,19 +250,18 @@ with tab2:
                 st.markdown("### 📋 Reporte de Auditoría Visual")
                 st.write(res_visual.text)
         else:
-            st.warning("Sube ambos planos para comparar.")
+            st.warning("Sube ambos planos.")
 
-# --- PESTAÑA 3: COMPARATIVO CAD (RESTAURADA) ---
+# --- PESTAÑA 3: COMPARATIVO CAD ---
 with tab3:
-    st.header("Superposición Matemática (Escritura vs DXF)")
-    st.write("Verifica si el archivo de AutoCAD coincide con los linderos de la escritura.")
+    st.header("Superposición Matemática")
     col_izq, col_der = st.columns(2)
-    with col_izq: arch_legal = st.file_uploader("1. Sube la escritura (PDF)", type=["pdf", "jpg", "png"], key="cad_leg")
-    with col_der: arch_dxf = st.file_uploader("2. Sube el plano topográfico (DXF)", type=["dxf"], key="cad_dxf")
+    with col_izq: arch_legal = st.file_uploader("1. Escritura (PDF)", type=["pdf", "jpg", "png"], key="cad_leg")
+    with col_der: arch_dxf = st.file_uploader("2. Topográfico (DXF)", type=["dxf"], key="cad_dxf")
     
     if st.button("⚖️ Ejecutar Superposición", key="btn_cad"):
         if arch_legal and arch_dxf:
-            with st.spinner("Extrayendo y superponiendo polígonos..."):
+            with st.spinner("Extrayendo polígonos..."):
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tf:
                     tf.write(arch_legal.getbuffer())
                     temp_path = tf.name
@@ -288,50 +292,43 @@ with tab3:
                     coord_x_prof_raw, coord_y_prof_raw = extraer_poligono_dxf(arch_dxf)
                     if coord_x_prof_raw and len(coord_x_prof_raw) > 2:
                         area_prof = calcular_area(coord_x_prof_raw, coord_y_prof_raw)
-                        # Alinear el DXF al origen (0,0) para poder superponerlos
                         offset_x, offset_y = coord_x_prof_raw[0], coord_y_prof_raw[0]
                         coord_x_prof = [px - offset_x for px in coord_x_prof_raw]
                         coord_y_prof = [py - offset_y for py in coord_y_prof_raw]
                         
                         st.markdown("### 📊 Comparativo de Superficies")
                         met1, met2, met3 = st.columns(3)
-                        met1.metric(label="Área Legal (Escritura)", value=f"{area_ia:,.2f} m²")
+                        met1.metric(label="Área Legal", value=f"{area_ia:,.2f} m²")
                         diferencia = area_prof - area_ia
-                        met2.metric(label="Área Dibujada (AutoCAD)", value=f"{area_prof:,.2f} m²", delta=f"{diferencia:,.2f} m²", delta_color="inverse")
-                        if abs(diferencia) > 1.0: met3.error("⚠️ Discrepancia detectada.")
-                        else: met3.success("✅ Las áreas coinciden.")
-
+                        met2.metric(label="Área Topógrafo", value=f"{area_prof:,.2f} m²", delta=f"{diferencia:,.2f} m²", delta_color="inverse")
+                        
                         fig, ax = plt.subplots(figsize=(10, 10))
-                        ax.plot(cx, cy, color='blue', linestyle='-', linewidth=2, label='Legal (Escritura)')
-                        ax.plot(coord_x_prof, coord_y_prof, marker='x', color='red', linestyle='--', linewidth=2, label='Topógrafo (AutoCAD)')
+                        ax.plot(cx, cy, color='blue', linestyle='-', linewidth=2, label='Legal')
+                        ax.plot(coord_x_prof, coord_y_prof, marker='x', color='red', linestyle='--', linewidth=2, label='DXF')
                         ax.legend()
                         ax.axis('equal')
                         ax.grid(True, linestyle='--', alpha=0.6)
                         st.pyplot(fig)
-                    else:
-                        st.error("No se detectó una polilínea cerrada en el DXF.")
-                else:
-                    st.error("Fallo al leer la escritura.")
-        else:
-            st.warning("Sube ambos archivos.")
+                    else: st.error("No se detectó polilínea cerrada en el DXF.")
+                else: st.error("Fallo al leer la escritura.")
+        else: st.warning("Sube ambos archivos.")
 
-# --- PESTAÑA 4: CONVERTIDOR TOPOGRÁFICO (NUEVA) ---
+# --- PESTAÑA 4: CONVERTIDOR TOPOGRÁFICO ---
 with tab4:
-    st.header("🔄 Convertidor Topográfico (El Salvador)")
-    st.write("Herramientas rápidas para cálculos de OPAMSS y CNR.")
+    st.header("🔄 Convertidor Topográfico")
+    st.write("Herramientas oficiales para cálculos de OPAMSS y CNR El Salvador.")
     
-    col1, col2 = st.columns(2)
-    
-    with col1:
+    # 1. Herramientas Rápidas
+    col_area, col_azi = st.columns(2)
+    with col_area:
         st.subheader("📏 Conversión de Áreas")
-        area_input = st.number_input("Ingresa el valor del Área:", value=1.0, min_value=0.0)
-        tipo_area = st.selectbox("De qué unidad a qué unidad:", 
-                                ["Varas Cuadradas (v²) a Metros Cuadrados (m²)", 
-                                 "Metros Cuadrados (m²) a Varas Cuadradas (v²)",
-                                 "Manzanas a Varas Cuadradas (v²)",
-                                 "Manzanas a Metros Cuadrados (m²)"])
+        area_input = st.number_input("Valor a convertir:", value=1.0, min_value=0.0)
+        tipo_area = st.selectbox("Conversión:", 
+                                ["v² a m² (Varas a Metros)", 
+                                 "m² a v² (Metros a Varas)",
+                                 "Manzanas a v²",
+                                 "Manzanas a m²"])
         
-        # Factor CNR El Salvador: 1 v² = 0.698896 m² / 1 Manzana = 10,000 v²
         res_area = 0.0
         if "v² a m²" in tipo_area: res_area = area_input * 0.698896
         elif "m² a v²" in tipo_area: res_area = area_input / 0.698896
@@ -340,14 +337,13 @@ with tab4:
         
         st.success(f"**Resultado:** {res_area:,.4f}")
 
-    with col2:
+    with col_azi:
         st.subheader("📍 Grados a Azimut Decimal")
-        st.write("Convierte rumbos escritos a grados decimales para AutoCAD.")
-        cuadrante = st.selectbox("Cuadrante:", ["Norte-Este (NE)", "Norte-Oeste (NW)", "Sur-Este (SE)", "Sur-Oeste (SW)"])
-        col_g, col_m, col_s = st.columns(3)
-        with col_g: grad = col_g.number_input("Grados (°)", value=0, min_value=0, max_value=90)
-        with col_m: min_val = col_m.number_input("Minutos (')", value=0, min_value=0, max_value=59)
-        with col_s: sec_val = col_s.number_input("Segundos ('')", value=0.0, min_value=0.0, max_value=59.9)
+        cuadrante = st.selectbox("Cuadrante (Rumbo):", ["Norte-Este (NE)", "Norte-Oeste (NW)", "Sur-Este (SE)", "Sur-Oeste (SW)"])
+        cg, cm, cs = st.columns(3)
+        with cg: grad = cg.number_input("Grados (°)", value=0, min_value=0, max_value=90)
+        with cm: min_val = cm.number_input("Minutos (')", value=0, min_value=0, max_value=59)
+        with cs: sec_val = cs.number_input("Segundos ('')", value=0.0, min_value=0.0, max_value=59.9)
         
         dec_val = grad + (min_val / 60.0) + (sec_val / 3600.0)
         azimut_final = 0.0
@@ -355,5 +351,69 @@ with tab4:
         elif "NW" in cuadrante: azimut_final = 360.0 - dec_val
         elif "SE" in cuadrante: azimut_final = 180.0 - dec_val
         elif "SW" in cuadrante: azimut_final = 180.0 + dec_val
-        
         st.info(f"**Azimut Decimal:** {azimut_final:.4f}°")
+
+    st.markdown("---")
+    
+    # 2. Convertidor Especializado WGS84 a Cónica
+    st.subheader("🌐 WGS84 ⇄ Proyección Cónica (LCC El Salvador EPSG:5367)")
+    
+    if not PYPROJ_INSTALLED:
+        st.error("⚠️ Falta la librería matemática de mapas. Ve a tu archivo `requirements.txt` en GitHub, agrega la palabra `pyproj` en una línea nueva, guarda y reinicia la app para activar esta función.")
+    else:
+        modo_conversion = st.radio("Dirección de la conversión:", 
+                                   ["WGS84 ➔ Proyección Cónica", "Proyección Cónica ➔ WGS84"], 
+                                   horizontal=True)
+                                   
+        if modo_conversion == "WGS84 ➔ Proyección Cónica":
+            col_wgs, col_con = st.columns(2)
+            with col_wgs:
+                st.markdown("**1. Latitud (Norte)**")
+                cg1, cm1, cs1 = st.columns(3)
+                with cg1: lat_g = st.number_input("Grados (N)", value=13, min_value=0, max_value=90)
+                with cm1: lat_m = st.number_input("Minutos (N)", value=0, min_value=0, max_value=59)
+                with cs1: lat_s = st.number_input("Segundos (N)", value=0.0, format="%.5f")
+                
+                st.markdown("**2. Longitud (Oeste)**")
+                cg2, cm2, cs2 = st.columns(3)
+                with cg2: lon_g = st.number_input("Grados (W)", value=89, min_value=0, max_value=180)
+                with cm2: lon_m = st.number_input("Minutos (W)", value=0, min_value=0, max_value=59)
+                with cs2: lon_s = st.number_input("Segundos (W)", value=0.0, format="%.5f")
+                
+            with col_con:
+                st.markdown("**Resultados Cónica**")
+                if st.button("🔄 Calcular Coordenadas Planas (X, Y)"):
+                    lat_dec = lat_g + (lat_m / 60.0) + (lat_s / 3600.0)
+                    lon_dec = -(lon_g + (lon_m / 60.0) + (lon_s / 3600.0)) # W es negativo
+                    
+                    # Transformación matemática oficial El Salvador
+                    transformer = Transformer.from_crs("EPSG:4326", "EPSG:5367", always_xy=True)
+                    x_con, y_con = transformer.transform(lon_dec, lat_dec)
+                    
+                    st.success(f"**E (X):** {x_con:,.4f} m\n\n**N (Y):** {y_con:,.4f} m")
+        
+        else:
+            col_con, col_wgs = st.columns(2)
+            with col_con:
+                st.markdown("**1. Proyección Cónica**")
+                x_in = st.number_input("Coordenada E (X)", value=500000.0, format="%.4f")
+                y_in = st.number_input("Coordenada N (Y)", value=295000.0, format="%.4f")
+            
+            with col_wgs:
+                st.markdown("**Resultados WGS84**")
+                if st.button("🔄 Calcular Latitud y Longitud"):
+                    transformer = Transformer.from_crs("EPSG:5367", "EPSG:4326", always_xy=True)
+                    lon_dec, lat_dec = transformer.transform(x_in, y_in)
+                    
+                    # Convertir Lat a DMS
+                    lat_g_out = int(abs(lat_dec))
+                    lat_m_out = int((abs(lat_dec) - lat_g_out) * 60)
+                    lat_s_out = ((abs(lat_dec) - lat_g_out) - (lat_m_out/60.0)) * 3600
+                    
+                    # Convertir Lon a DMS
+                    lon_dec_abs = abs(lon_dec)
+                    lon_g_out = int(lon_dec_abs)
+                    lon_m_out = int((lon_dec_abs - lon_g_out) * 60)
+                    lon_s_out = ((lon_dec_abs - lon_g_out) - (lon_m_out/60.0)) * 3600
+                    
+                    st.success(f"**Latitud (N):** {lat_g_out}° {lat_m_out}' {lat_s_out:.4f}''\n\n**Longitud (W):** {lon_g_out}° {lon_m_out}' {lon_s_out:.4f}''")
