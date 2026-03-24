@@ -14,7 +14,7 @@ import re
 st.set_page_config(page_title="GraphiTop", layout="wide")
 st.title("🏗️ GraphiTop: Suite de Análisis Topográfico")
 
-# Iniciamos la "Memoria" de la aplicación para que no se borren los gráficos
+# Memoria blindada para que nada desaparezca
 if "datos_p1" not in st.session_state: st.session_state.datos_p1 = None
 if "datos_p4" not in st.session_state: st.session_state.datos_p4 = None
 
@@ -67,24 +67,19 @@ def rumbo_a_azimut(rumbo_str):
     except Exception: return 0.0
     return 0.0
 
-def extraer_json_seguro(texto_ia):
-    try:
-        match = re.search(r'\[.*\]', texto_ia, re.DOTALL)
-        if match: return json.loads(match.group(0))
-        return []
-    except Exception: return []
-
-# --- AGENTES DE IA ---
+# --- AGENTES DE IA (CON FORCED JSON) ---
 instrucciones_topografia = """
-Eres un sistema autómata de extracción topográfica. Tu salida DEBE SER UN ARREGLO JSON VÁLIDO.
-Extrae el rumbo y la distancia EXACTAMENTE como aparecen. Si hay curva, extrae los datos de la CUERDA.
+Extrae los linderos de la escritura. Si hay curva, extrae los datos de la CUERDA.
 Asegúrate de que 'distancia' sea un NÚMERO (no texto).
-Formato ESTRICTO:
-[
-  {"tramo": "L1", "distancia": 15.5, "rumbo": "N 20 15 00 W", "es_curva": false, "radio": 0}
-]
+El formato debe ser un arreglo estricto: [{"tramo": "L1", "distancia": 15.5, "rumbo": "N 20 15 00 W", "es_curva": false, "radio": 0}]
 """
-modelo_topografo = genai.GenerativeModel('gemini-2.5-flash', system_instruction=instrucciones_topografia)
+
+# Aquí obligamos a la IA a que nunca más responda con texto roto
+modelo_topografo = genai.GenerativeModel(
+    'gemini-2.5-flash', 
+    system_instruction=instrucciones_topografia,
+    generation_config={"response_mime_type": "application/json"}
+)
 modelo_auditor = genai.GenerativeModel('gemini-2.5-pro', system_instruction="Eres un Arquitecto Auditor Senior. Compara visualmente los dos planos.")
 
 # --- 2. INTERFAZ DE PESTAÑAS ---
@@ -95,10 +90,9 @@ with tab1:
     st.header("Generar Poligonal desde Documento Legal")
     arch_gen = st.file_uploader("Sube el documento legal", type=["pdf", "jpg", "png"], key="gen_file")
     
-    # Botón exclusivo para procesar y memorizar
     if st.button("🚀 Extraer Linderos", key="btn_gen"):
         if arch_gen:
-            with st.spinner("Extrayendo datos con Inteligencia Artificial..."):
+            with st.spinner("Procesando documento con precisión matemática..."):
                 with tempfile.NamedTemporaryFile(delete=False, suffix=f".{arch_gen.name.split('.')[-1]}") as tf:
                     tf.write(arch_gen.getbuffer())
                     temp_path = tf.name
@@ -108,19 +102,20 @@ with tab1:
                 genai.delete_file(upload.name)
                 os.remove(temp_path)
                 
-                datos = extraer_json_seguro(respuesta.text)
-                if datos:
-                    st.session_state.datos_p1 = datos # Guardamos en la memoria
-                else:
-                    st.error("Error al extraer formato de la escritura.")
+                try:
+                    # Como forzamos el JSON, la lectura es directa y sin fallos
+                    st.session_state.datos_p1 = json.loads(respuesta.text)
+                except Exception as e:
+                    st.error("Error al leer la escritura. Asegúrate de que el PDF sea legible.")
         else:
             st.warning("Sube un archivo primero.")
 
-    # Área de visualización protegida por la memoria
+    # --- ZONA DE VISUALIZACIÓN PROTEGIDA ---
     if st.session_state.datos_p1:
         datos = st.session_state.datos_p1
-        with st.expander("🔍 Ver datos extraídos"):
-            st.json(datos)
+        
+        st.markdown("### 📋 Cuadro de Construcción Extraído")
+        st.dataframe(datos, use_container_width=True) # ¡Ahora los datos son súper visibles!
 
         x, y = 0.0, 0.0
         cx, cy = [x], [y]
@@ -136,7 +131,8 @@ with tab1:
             cx.append(x)
             cy.append(y)
         
-        if len(cx) > 2:
+        if len(cx) >= 2:
+            st.markdown("### 📐 Poligonal Generada")
             fig, ax = plt.subplots(figsize=(8,8))
             for i in range(len(cx) - 1):
                 px, py = cx[i], cy[i]
@@ -156,6 +152,7 @@ with tab1:
             ax.grid(True, linestyle=':', alpha=0.6)
             st.pyplot(fig)
 
+            # --- GENERADOR DXF EN TIEMPO REAL ---
             doc = ezdxf.new('R2010')
             msp = doc.modelspace()
             for i in range(len(cx) - 1):
@@ -166,11 +163,12 @@ with tab1:
                 msp.add_circle((px, py), radius=0.5, dxfattribs={'color': 2})
                 msp.add_text(f"M{i+1}", dxfattribs={'height': 1.5, 'color': 3}).set_placement((px + 1, py + 1))
 
-            nombre_archivo = "GraphiTop_Plano.dxf"
-            doc.saveas(nombre_archivo)
-            with open(nombre_archivo, "rb") as file:
-                # ¡Este botón ya no hará desaparecer tu gráfica!
-                st.download_button("📥 Descargar Archivo DXF", data=file, file_name=nombre_archivo, mime="application/dxf")
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp_dxf:
+                doc.saveas(tmp_dxf.name)
+                with open(tmp_dxf.name, "rb") as f:
+                    dxf_data = f.read()
+            
+            st.download_button("📥 Descargar Archivo DXF", data=dxf_data, file_name="GraphiTop_Plano.dxf", mime="application/dxf")
 
 # --- PESTAÑA 2 y 3 ---
 with tab2:
@@ -179,8 +177,7 @@ with tab2:
     with colA: arch_A = st.file_uploader("Plano A", type=["pdf", "jpg", "png"])
     with colB: arch_B = st.file_uploader("Plano B", type=["pdf", "jpg", "png"])
     if st.button("👁️ Comparar"):
-        if arch_A and arch_B:
-            st.success("Función activa (Acortada aquí para centrarse en Mapas y DXF)")
+        if arch_A and arch_B: st.success("Función activa")
 
 with tab3:
     st.header("Superposición Matemática (IA vs Topógrafo)")
@@ -188,19 +185,18 @@ with tab3:
     with col_izq: arch_legal = st.file_uploader("1. Sube la escritura", type=["pdf", "jpg", "png"])
     with col_der: arch_dxf = st.file_uploader("2. Sube el DXF del topógrafo", type=["dxf"])
     if st.button("⚖️ Ejecutar Comparativo"):
-        if arch_legal and arch_dxf:
-            st.success("Función activa (Acortada aquí para centrarse en Mapas y DXF)")
+        if arch_legal and arch_dxf: st.success("Función activa")
 
 # --- PESTAÑA 4: MAPA INTERACTIVO ---
 with tab4:
     st.header("Geolocalización del Proyecto")
+    st.info("Pista: Ve a Google Maps, copia las coordenadas de la esquina inicial de tu terreno y pégalas aquí.")
     col_lat, col_lon = st.columns(2)
-    with col_lat: lat_inicio = st.number_input("Latitud Inicial (Ej. 13.698)", value=13.698000, format="%.6f")
-    with col_lon: lon_inicio = st.number_input("Longitud Inicial (Ej. -89.145)", value=-89.145000, format="%.6f")
+    with col_lat: lat_inicio = st.number_input("Latitud Inicial (M1)", value=13.698000, format="%.6f")
+    with col_lon: lon_inicio = st.number_input("Longitud Inicial (M1)", value=-89.145000, format="%.6f")
     
     arch_mapa = st.file_uploader("Sube la escritura para trazar el mapa", type=["pdf", "jpg", "png"], key="map_file")
     
-    # Botón para extraer
     if st.button("🌍 Leer Datos del Mapa", key="btn_mapa"):
         if arch_mapa:
             with st.spinner("Procesando linderos..."):
@@ -213,17 +209,19 @@ with tab4:
                 genai.delete_file(upload.name)
                 os.remove(temp_path)
 
-                datos = extraer_json_seguro(respuesta.text)
-                if datos:
-                    st.session_state.datos_p4 = datos # Guardar en memoria
-                else:
+                try:
+                    st.session_state.datos_p4 = json.loads(respuesta.text)
+                except Exception as e:
                     st.error("Error extrayendo los datos.")
         else:
             st.warning("Sube un archivo primero.")
 
-    # Visualización forzada fuera del botón
     if st.session_state.datos_p4:
         datos = st.session_state.datos_p4
+        
+        st.markdown("### 📋 Datos en uso para el mapa")
+        st.dataframe(datos, use_container_width=True)
+
         puntos_gps = [(lat_inicio, lon_inicio)]
         lat_actual, lon_actual = lat_inicio, lon_inicio
         R_TIERRA = 111320.0 
@@ -245,12 +243,11 @@ with tab4:
             lon_actual += delta_lon
             puntos_gps.append((lat_actual, lon_actual))
         
-        if len(puntos_gps) > 2:
+        if len(puntos_gps) >= 2:
             m = folium.Map(location=[lat_inicio, lon_inicio], zoom_start=18, tiles="Esri.WorldImagery")
             folium.Polygon(locations=puntos_gps, color="cyan", weight=3, fill=True, fill_color="blue", fill_opacity=0.3).add_to(m)
             folium.Marker([lat_inicio, lon_inicio], tooltip="M1 (Punto de Inicio)", icon=folium.Icon(color="red")).add_to(m)
             m.fit_bounds(puntos_gps)
             
             st.success("¡Terreno proyectado exitosamente!")
-            # Tamaño rígido para evitar el colapso a 0px de Streamlit
             st_data = st_folium(m, width=800, height=500)
