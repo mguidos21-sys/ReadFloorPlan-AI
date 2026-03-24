@@ -14,7 +14,6 @@ import re
 st.set_page_config(page_title="GraphiTop", layout="wide")
 st.title("🏗️ GraphiTop: Suite de Análisis Topográfico")
 
-# Memoria blindada para que nada desaparezca
 if "datos_p1" not in st.session_state: st.session_state.datos_p1 = None
 if "datos_p4" not in st.session_state: st.session_state.datos_p4 = None
 
@@ -25,7 +24,6 @@ except KeyError:
     st.error("Falta configurar la llave de la API en secrets.toml")
     st.stop()
 
-# --- FUNCIONES MATEMÁTICAS ---
 def calcular_area(x, y):
     area = 0.0
     n = len(x)
@@ -67,22 +65,22 @@ def rumbo_a_azimut(rumbo_str):
     except Exception: return 0.0
     return 0.0
 
-# --- AGENTES DE IA (CON FORCED JSON) ---
+def extraer_json_seguro(texto_ia):
+    try:
+        match = re.search(r'\[.*\]', texto_ia, re.DOTALL)
+        if match: return json.loads(match.group(0))
+        return []
+    except Exception: return []
+
 instrucciones_topografia = """
 Extrae los linderos de la escritura. Si hay curva, extrae los datos de la CUERDA.
 Asegúrate de que 'distancia' sea un NÚMERO (no texto).
 El formato debe ser un arreglo estricto: [{"tramo": "L1", "distancia": 15.5, "rumbo": "N 20 15 00 W", "es_curva": false, "radio": 0}]
 """
 
-# Aquí obligamos a la IA a que nunca más responda con texto roto
-modelo_topografo = genai.GenerativeModel(
-    'gemini-2.5-flash', 
-    system_instruction=instrucciones_topografia,
-    generation_config={"response_mime_type": "application/json"}
-)
+modelo_topografo = genai.GenerativeModel('gemini-2.5-flash', system_instruction=instrucciones_topografia)
 modelo_auditor = genai.GenerativeModel('gemini-2.5-pro', system_instruction="Eres un Arquitecto Auditor Senior. Compara visualmente los dos planos.")
 
-# --- 2. INTERFAZ DE PESTAÑAS ---
 tab1, tab2, tab3, tab4 = st.tabs(["📄 1. Generador DXF", "⚖️ 2. Comparativo Visual", "📐 3. Comparativo CAD", "🌍 4. Mapa Interactivo"])
 
 # --- PESTAÑA 1: GENERADOR ---
@@ -92,7 +90,7 @@ with tab1:
     
     if st.button("🚀 Extraer Linderos", key="btn_gen"):
         if arch_gen:
-            with st.spinner("Procesando documento con precisión matemática..."):
+            with st.spinner("Procesando documento..."):
                 with tempfile.NamedTemporaryFile(delete=False, suffix=f".{arch_gen.name.split('.')[-1]}") as tf:
                     tf.write(arch_gen.getbuffer())
                     temp_path = tf.name
@@ -102,20 +100,23 @@ with tab1:
                 genai.delete_file(upload.name)
                 os.remove(temp_path)
                 
+                # Filtro de limpieza indestructible
+                texto_limpio = respuesta.text.replace('```json', '').replace('```', '').strip()
                 try:
-                    # Como forzamos el JSON, la lectura es directa y sin fallos
-                    st.session_state.datos_p1 = json.loads(respuesta.text)
-                except Exception as e:
-                    st.error("Error al leer la escritura. Asegúrate de que el PDF sea legible.")
+                    st.session_state.datos_p1 = json.loads(texto_limpio)
+                except Exception:
+                    st.session_state.datos_p1 = extraer_json_seguro(respuesta.text)
+                
+                if not st.session_state.datos_p1:
+                    st.error("Error al leer la escritura. La IA no generó datos válidos.")
         else:
             st.warning("Sube un archivo primero.")
 
-    # --- ZONA DE VISUALIZACIÓN PROTEGIDA ---
     if st.session_state.datos_p1:
         datos = st.session_state.datos_p1
         
         st.markdown("### 📋 Cuadro de Construcción Extraído")
-        st.dataframe(datos, use_container_width=True) # ¡Ahora los datos son súper visibles!
+        st.dataframe(datos, use_container_width=True)
 
         x, y = 0.0, 0.0
         cx, cy = [x], [y]
@@ -152,9 +153,11 @@ with tab1:
             ax.grid(True, linestyle=':', alpha=0.6)
             st.pyplot(fig)
 
-            # --- GENERADOR DXF EN TIEMPO REAL ---
+            # --- GENERADOR DXF CON CUADRO DE CONSTRUCCIÓN ---
             doc = ezdxf.new('R2010')
             msp = doc.modelspace()
+            
+            # 1. Dibujar el polígono
             for i in range(len(cx) - 1):
                 px, py = cx[i], cy[i]
                 nx, ny = cx[i+1], cy[i+1]
@@ -163,6 +166,29 @@ with tab1:
                 msp.add_circle((px, py), radius=0.5, dxfattribs={'color': 2})
                 msp.add_text(f"M{i+1}", dxfattribs={'height': 1.5, 'color': 3}).set_placement((px + 1, py + 1))
 
+            # 2. Dibujar la tabla de datos a la derecha del dibujo
+            max_x, max_y = max(cx), max(cy)
+            cuadro_x, cuadro_y = max_x + 15, max_y
+            
+            msp.add_text("CUADRO DE CONSTRUCCION", dxfattribs={'height': 2, 'color': 3}).set_placement((cuadro_x, cuadro_y))
+            cuadro_y -= 4 
+            msp.add_text("TRAMO", dxfattribs={'height': 1.2, 'color': 2}).set_placement((cuadro_x, cuadro_y))
+            msp.add_text("RUMBO", dxfattribs={'height': 1.2, 'color': 2}).set_placement((cuadro_x + 15, cuadro_y))
+            msp.add_text("DISTANCIA", dxfattribs={'height': 1.2, 'color': 2}).set_placement((cuadro_x + 45, cuadro_y))
+            cuadro_y -= 2.5
+            
+            for i, t in enumerate(datos):
+                mojon_inicio = i + 1
+                mojon_fin = i + 2 if i < len(datos) else 1
+                nota_curva = " (Cuerda)" if t.get("es_curva", False) else ""
+                texto_tramo = f"M{mojon_inicio} a M{mojon_fin}{nota_curva}"
+                
+                msp.add_text(texto_tramo, dxfattribs={'height': 1, 'color': 7}).set_placement((cuadro_x, cuadro_y))
+                msp.add_text(str(t.get('rumbo', 'FALTA')), dxfattribs={'height': 1, 'color': 7}).set_placement((cuadro_x + 15, cuadro_y))
+                msp.add_text(f"{t.get('distancia', '0')} m", dxfattribs={'height': 1, 'color': 7}).set_placement((cuadro_x + 45, cuadro_y))
+                cuadro_y -= 2 
+
+            # Preparar archivo para descarga
             with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp_dxf:
                 doc.saveas(tmp_dxf.name)
                 with open(tmp_dxf.name, "rb") as f:
@@ -209,9 +235,13 @@ with tab4:
                 genai.delete_file(upload.name)
                 os.remove(temp_path)
 
+                texto_limpio = respuesta.text.replace('```json', '').replace('```', '').strip()
                 try:
-                    st.session_state.datos_p4 = json.loads(respuesta.text)
-                except Exception as e:
+                    st.session_state.datos_p4 = json.loads(texto_limpio)
+                except Exception:
+                    st.session_state.datos_p4 = extraer_json_seguro(respuesta.text)
+                
+                if not st.session_state.datos_p4:
                     st.error("Error extrayendo los datos.")
         else:
             st.warning("Sube un archivo primero.")
