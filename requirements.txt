@@ -4,3 +4,4 @@ ezdxf
 matplotlib
 folium
 streamlit-folium
+pyproj
