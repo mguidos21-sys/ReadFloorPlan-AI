@@ -85,7 +85,44 @@ if archivo and st.button("Procesar Memoria Técnica"):
         }
         """
         
-        res = model.generate_content([prompt, google_file])
+        import time # Asegúrate de tener este import arriba
+
+# ... dentro del bloque del botón ...
+
+if st.button("Procesar Memoria Técnica"):
+    # Definimos el número de intentos
+    intentos_maximos = 3
+    intento_actual = 0
+    exito = False
+
+    while intento_actual < intentos_maximos and not exito:
+        try:
+            with st.spinner(f"Analizando (Intento {intento_actual + 1}/{intentos_maximos})..."):
+                # Tu código original de procesamiento
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                    tmp.write(archivo.getvalue())
+                    google_file = genai.upload_file(path=tmp.name)
+
+                res = model.generate_content([prompt, google_file])
+                
+                # Si llega aquí, es que funcionó
+                exito = True
+                
+        except google.api_core.exceptions.ResourceExhausted:
+            intento_actual += 1
+            if intento_actual < intentos_maximos:
+                st.warning(f"⚠️ Cuota agotada. Esperando 10 segundos para reintentar...")
+                time.sleep(10) # Pausa técnica para liberar cuota
+            else:
+                st.error("🛑 Se agotaron los reintentos. Google está limitando las peticiones por ahora. Intenta de nuevo en un minuto.")
+        
+        except Exception as e:
+            st.error(f"Error inesperado: {e}")
+            break # Si es otro error, no reintentamos
+
+    if exito:
+        # Aquí sigue tu lógica de procesar el JSON y generar el DXF...
+        st.success("✅ Análisis completado con éxito.")
         try:
             # Extraer y limpiar JSON
             json_data = json.loads(re.search(r'\{.*\}', res.text, re.DOTALL).group())
