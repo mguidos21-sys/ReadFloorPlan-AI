@@ -6,11 +6,10 @@ import os
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(page_title="Lector de Planos IA", layout="centered")
 
-st.title("🏗️ Lector de Planos con IA")
-st.write("Sube una imagen de tu plano para analizarla.")
+st.title("🏗️ Lector de Planos e Información Técnica")
+st.write("Sube tu plano en formato **Imagen (JPG/PNG)** o **PDF**.")
 
 # --- CONFIGURACIÓN DE LA API ---
-# Intenta obtener la API Key desde los Secrets de Streamlit
 if "GOOGLE_API_KEY" in st.secrets:
     api_key = st.secrets["GOOGLE_API_KEY"]
 else:
@@ -19,47 +18,55 @@ else:
 
 genai.configure(api_key=api_key)
 
-# --- CONFIGURACIÓN DEL MODELO ---
-# Usamos 'gemini-1.5-flash' para evitar el error de ResourceExhausted (Cuota)
-# ya que es más liviano y tiene límites más amplios que el 'pro'.
+# Usamos Flash por su mayor velocidad y límites de cuota más amplios
 model = genai.GenerativeModel('gemini-1.5-flash')
 
 # --- INTERFAZ DE CARGA ---
-uploaded_file = st.file_uploader("Elige una imagen del plano...", type=["jpg", "jpeg", "png"])
+# Añadimos 'pdf' a los tipos permitidos
+uploaded_file = st.file_uploader("Sube tu archivo (Imagen o PDF)", type=["jpg", "jpeg", "png", "pdf"])
 
 if uploaded_file is not None:
-    # Mostrar la imagen cargada
-    image = Image.open(uploaded_file)
-    st.image(image, caption='Plano cargado correctamente', use_container_width=True)
+    # 1. Determinar el tipo de archivo y preparar el contenido
+    file_type = uploaded_file.type
     
-    # Botón para activar el análisis
-    if st.button("Analizar Plano"):
+    if file_type == "application/pdf":
+        # Preparar el PDF para la IA
+        documento_para_ia = {
+            "mime_type": "application/pdf",
+            "data": uploaded_file.getvalue()
+        }
+        st.info("📄 Archivo PDF cargado correctamente.")
+    else:
+        # Preparar la Imagen para la IA
+        img = Image.open(uploaded_file)
+        documento_para_ia = img
+        st.image(img, caption='Imagen cargada', use_container_width=True)
+    
+    # --- BOTÓN DE ANÁLISIS ---
+    if st.button("Analizar Documento"):
         try:
-            with st.spinner("La IA está analizando los detalles del plano..."):
-                # Preparamos el prompt técnico
+            with st.spinner("La IA está procesando el archivo..."):
                 prompt = (
-                    "Actúa como un experto topógrafo y arquitecto. "
-                    "Analiza detalladamente este plano. Identifica medidas, "
-                    "estructuras, nombres de áreas y cualquier detalle técnico relevante."
+                    "Actúa como un experto en ingeniería y arquitectura. "
+                    "Analiza este archivo (plano o documento técnico). "
+                    "Extrae medidas, leyendas, nombres de ambientes y detalles técnicos. "
+                    "Presenta la información de forma estructurada."
                 )
                 
-                # LLAMADA A LA API (Aquí es donde ocurría el error)
-                response = model.generate_content([prompt, image])
+                # Enviamos el contenido (sea PDF o Imagen)
+                response = model.generate_content([prompt, documento_para_ia])
                 
-                # Mostrar resultado
                 st.success("¡Análisis completado!")
-                st.markdown("### Resumen del análisis:")
+                st.markdown("### Detalles detectados:")
                 st.write(response.text)
 
         except Exception as e:
-            # Captura específica del error de cuota (ResourceExhausted)
             error_msg = str(e)
-            if "429" in error_msg or "ResourceExhausted" in error_msg:
-                st.error("🛑 **Error de Cuota:** Has superado el límite de solicitudes gratuitas de Google.")
-                st.info("Espera 60 segundos antes de intentar de nuevo o reduce el tamaño de la imagen.")
+            if "ResourceExhausted" in error_msg or "429" in error_msg:
+                st.error("🛑 Cuota agotada. Por favor, espera un minuto antes de reintentar.")
             else:
-                st.error(f"Ocurrió un error inesperado: {e}")
+                st.error(f"Error al procesar: {e}")
 
 # --- PIE DE PÁGINA ---
 st.divider()
-st.caption("Desarrollado con Streamlit y Google Gemini 1.5 Flash")
+st.caption("Compatible con Planos en PDF, JPG y PNG")
