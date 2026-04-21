@@ -1,5 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
+st.write(f"Versión de la librería de Google: {genai.__version__}")
 from PIL import Image
 import tempfile
 import os
