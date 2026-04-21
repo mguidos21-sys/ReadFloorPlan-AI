@@ -146,4 +146,4 @@ if archivo:
 
 # --- PIE DE PÁGINA ---
 st.divider()
-st.caption("Norm.AI | Daniel González - Arquitectura & Tecnología")
+st.caption("Norm.AI | Miguel Guidos - Arquitectura & Tecnología")
