@@ -1,94 +1,101 @@
 import streamlit as st
 import google.generativeai as genai
-from PIL import Image
-import tempfile
-import os
-import ezdxf  # Librería para crear el CAD
+import ezdxf
+from ezdxf.math import Vec2
 import json
 import re
+import math
+import os
+import tempfile
 
-# --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Norm.AI - Poligonal a CAD", layout="centered")
-st.title("🏗️ Extractor de Poligonal a DWG/DXF")
+# --- LÓGICA DE CÁLCULO TOPOGRÁFICO ---
+def rumbo_a_radianes(rumbo):
+    # Ejemplo: "N 45 00 00 E"
+    partes = re.findall(r"([NSEW])|(\d+\.?\d*)", rumbo)
+    # Lógica simplificada para convertir rumbos a ángulos polares
+    # (En un entorno real, aquí se procesan grados, minutos y segundos)
+    return math.radians(45) # Placeholder para la lógica de conversión
 
-if "GOOGLE_API_KEY" in st.secrets:
-    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-else:
-    st.error("Falta API Key.")
-    st.stop()
-
-model = genai.GenerativeModel(model_name='models/gemini-2.5-flash')
-
-# --- FUNCIÓN PARA CREAR EL ARCHIVO CAD ---
-def crear_dxf(puntos):
-    doc = ezdxf.new('R2010')  # Crea un nuevo dibujo DXF
+def generar_poligonal_avanzada(datos):
+    doc = ezdxf.new('R2010')
     msp = doc.modelspace()
+    puntos = [Vec2(0, 0)]
     
-    # Si tenemos puntos, dibujamos la polilínea
-    if len(puntos) > 1:
-        # Cerramos la poligonal volviendo al primer punto
-        puntos.append(puntos[0])
-        msp.add_lwpolyline(puntos)
+    # Dibujar Poligonal y procesar Curvas
+    for i, tramo in enumerate(datos['tramos']):
+        dist = float(tramo['distancia'])
+        # Aquí se aplicaría la conversión de rumbo a ángulo real
+        angulo = math.radians(float(tramo.get('angulo_deg', 0))) 
+        
+        nuevo_punto = puntos[-1] + Vec2(math.cos(angulo)*dist, math.sin(angulo)*dist)
+        
+        if tramo.get('tipo') == 'curva':
+            # Agregar arco usando bulge (simplificado)
+            msp.add_lwpolyline([puntos[-1], nuevo_punto], dxfattribs={'bulge': 0.5})
+        else:
+            msp.add_line(puntos[-1], nuevo_punto)
+        
+        puntos.append(nuevo_punto)
+
+    # --- GENERAR CUADRO DE RUMBOS Y DISTANCIAS ---
+    # Dibujamos una tabla simple con líneas y texto en el CAD
+    x_tabla, y_tabla = 20, 0 # Posición a la par del dibujo
+    msp.add_text("CUADRO DE RUMBOS Y DISTANCIAS", dxfattribs={'height': 0.5}).set_placement((x_tabla, y_tabla + 2))
     
-    path = "poligonal_generada.dxf"
+    header = "EST | RUMBO | DISTANCIA | VÉRTICE"
+    msp.add_text(header, dxfattribs={'height': 0.3}).set_placement((x_tabla, y_tabla + 1))
+    
+    for i, tramo in enumerate(datos['tramos']):
+        linea = f"{i+1}-{i+2} | {tramo['rumbo']} | {tramo['distancia']}m"
+        msp.add_text(linea, dxfattribs={'height(0.25)'}).set_placement((x_tabla, y_tabla - (i * 0.5)))
+
+    path = "poligonal_tecnica.dxf"
     doc.saveas(path)
     return path
 
-# --- INTERFAZ ---
-uploaded_file = st.file_uploader("Sube el plano de la poligonal", type=["jpg", "jpeg", "png", "pdf"])
+# --- INTERFAZ DE STREAMLIT ---
+st.set_page_config(page_title="Norm.AI - Topografía Pro")
+st.title("📐 Extractor de Poligonales y Cuadros Técnicos")
 
-if uploaded_file is not None:
-    if st.button("Generar Poligonal CAD"):
+if "GOOGLE_API_KEY" in st.secrets:
+    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+    model = genai.GenerativeModel('models/gemini-2.5-flash')
+else:
+    st.error("Configura tu API Key")
+    st.stop()
+
+archivo = st.file_uploader("Sube plano o memoria descriptiva", type=["pdf", "jpg", "png"])
+
+if archivo and st.button("Procesar Memoria Técnica"):
+    with st.spinner("Interpretando datos topográficos..."):
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(archivo.getvalue())
+            google_file = genai.upload_file(path=tmp.name)
+
+        # Prompt ultra-específico
+        prompt = """
+        Analiza el documento y extrae la poligonal.
+        Busca rumbos, distancias y datos de curvas (radio, delta).
+        Devuelve un JSON estrictamente así:
+        {
+          "tramos": [
+            {"rumbo": "N 10°20' E", "distancia": 15.50, "tipo": "linea", "angulo_deg": 80},
+            {"rumbo": "S 80°00' E", "distancia": 5.00, "tipo": "curva", "radio": 10.0, "angulo_deg": -10}
+          ]
+        }
+        """
+        
+        res = model.generate_content([prompt, google_file])
         try:
-            with st.spinner("Extrayendo geometría..."):
-                # 1. Guardar temporal y subir
-                with tempfile.NamedTemporaryFile(delete=False, suffix=f".{uploaded_file.name.split('.')[-1]}") as tmp:
-                    tmp.write(uploaded_file.getvalue())
-                    tmp_path = tmp.name
+            # Extraer y limpiar JSON
+            json_data = json.loads(re.search(r'\{.*\}', res.text, re.DOTALL).group())
+            archivo_dxf = generar_poligonal_avanzada(json_data)
+            
+            st.success("✅ Geometría y Cuadro de Rumbos generados.")
+            
+            with open(archivo_dxf, "rb") as f:
+                st.download_button("📥 Descargar DXF para AutoCAD", f, file_name="poligonal_final.dxf")
                 
-                google_file = genai.upload_file(path=tmp_path)
-
-                # 2. PROMPT ESPECÍFICO PARA COORDENADAS
-                prompt = (
-                    "Analiza la poligonal de este plano. "
-                    "Extrae los vértices (x, y) de la poligonal principal. "
-                    "Devuelve ÚNICAMENTE un JSON con este formato: {'puntos': [[x1, y1], [x2, y2], ...]} "
-                    "Usa números relativos o coordenadas detectadas en el plano."
-                )
-
-                response = model.generate_content([prompt, google_file])
-                
-                # 3. EXTRAER JSON DEL TEXTO (Limpieza de markdown)
-                texto_respuesta = response.text
-                match = re.search(r'\{.*\}', texto_respuesta, re.DOTALL)
-                
-                if match:
-                    datos = json.loads(match.group())
-                    puntos = datos.get('puntos', [])
-                    
-                    if puntos:
-                        # 4. CREAR EL ARCHIVO CAD
-                        archivo_cad = crear_dxf(puntos)
-                        
-                        st.success("✅ Poligonal extraída correctamente.")
-                        
-                        # 5. BOTÓN DE DESCARGA
-                        with open(archivo_cad, "rb") as file:
-                            st.download_button(
-                                label="💾 Descargar Poligonal (.DXF)",
-                                data=file,
-                                file_name="poligonal_norm_ai.dxf",
-                                mime="application/dxf"
-                            )
-                        st.info("Nota: El archivo está en formato DXF. Ábrelo en AutoCAD y guárdalo como DWG.")
-                    else:
-                        st.warning("No se detectaron puntos claros en la imagen.")
-                else:
-                    st.error("La IA no pudo formatear las coordenadas correctamente.")
-                
-                # Limpieza
-                genai.delete_file(google_file.name)
-                os.remove(tmp_path)
-
+            st.json(json_data) # Mostrar los datos extraídos para verificación
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"Error al procesar: {e}")
