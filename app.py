@@ -84,14 +84,24 @@ if archivo:
                         """
                         response = model.generate_content([prompt, google_file])
                         
-                        # Intentar procesar el JSON
                         json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
                         if json_match:
                             datos_ia = json.loads(json_match.group())
                             
-                            # 3. Generar el archivo CAD
+                            # Generar el archivo CAD
                             ruta_dxf = generar_dxf_profesional(datos_ia)
                             
                             st.success("¡Geometría procesada exitosamente!")
                             
-                            with open(ruta
+                            # ESTA ES LA PARTE QUE DABA EL ERROR:
+                            with open(ruta_dxf, "rb") as f:
+                                st.download_button(
+                                    label="📥 Descargar DXF para AutoCAD",
+                                    data=f,
+                                    file_name="poligonal_tecnica.dxf",
+                                    mime="application/dxf"
+                                )
+                            
+                            st.json(datos_ia)
+                            exito = True
+                            break
