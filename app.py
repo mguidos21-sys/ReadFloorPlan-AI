@@ -18,12 +18,27 @@ else:
 
 genai.configure(api_key=api_key)
 
-# --- 3. CONFIGURACIÓN DEL MODELO (ESTA ES LA LÍNEA QUE BUSCABAS) ---
-# Usamos el nombre técnico completo para evitar el error 404
+# --- DIAGNÓSTICO DE MODELOS ---
 try:
-    model = genai.GenerativeModel(model_name='models/gemini-1.5-flash')
+    # Intentamos listar los modelos para ver cuáles están disponibles para tu cuenta
+    available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+    st.write(f"Modelos disponibles en tu cuenta: {available_models}")
+    
+    # Intentamos elegir Flash si está en la lista, si no, el primero que encuentre
+    if 'models/gemini-1.5-flash' in available_models:
+        model_name = 'models/gemini-1.5-flash'
+    elif 'models/gemini-pro' in available_models:
+        model_name = 'models/gemini-pro'
+    else:
+        model_name = available_models[0]
+        
+    model = genai.GenerativeModel(model_name=model_name)
+    st.success(f"Usando el modelo: {model_name}")
+
 except Exception as e:
-    st.error(f"Error al inicializar el modelo: {e}")
+    st.error(f"Error al listar modelos: {e}")
+    # Fallback manual si el listado falla
+    model = genai.GenerativeModel(model_name='gemini-pro')
 
 # --- 4. CARGA DE ARCHIVOS ---
 uploaded_file = st.file_uploader("Sube un plano (JPG, PNG o PDF)", type=["jpg", "jpeg", "png", "pdf"])
