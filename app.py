@@ -1,5 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
+import google.api_core.exceptions
 import ezdxf
 from ezdxf.math import Vec2
 import json
@@ -7,132 +8,90 @@ import re
 import math
 import os
 import tempfile
+import time
 
-# --- LÓGICA DE CÁLCULO TOPOGRÁFICO ---
-def rumbo_a_radianes(rumbo):
-    # Ejemplo: "N 45 00 00 E"
-    partes = re.findall(r"([NSEW])|(\d+\.?\d*)", rumbo)
-    # Lógica simplificada para convertir rumbos a ángulos polares
-    # (En un entorno real, aquí se procesan grados, minutos y segundos)
-    return math.radians(45) # Placeholder para la lógica de conversión
+# --- 1. CONFIGURACIÓN Y VERSIÓN ---
+st.set_page_config(page_title="Norm.AI - Topografía Pro", layout="centered")
+st.title("📐 Extractor de Poligonales y Cuadros Técnicos")
 
-def generar_poligonal_avanzada(datos):
+# --- 2. CONFIGURACIÓN DE LA API ---
+if "GOOGLE_API_KEY" in st.secrets:
+    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+    # Usamos el modelo que confirmamos que tienes disponible
+    model = genai.GenerativeModel('models/gemini-2.5-flash')
+else:
+    st.error("⚠️ Configura tu 'GOOGLE_API_KEY' en los Secrets de Streamlit.")
+    st.stop()
+
+# --- 3. LÓGICA DE DIBUJO CAD ---
+def generar_dxf_profesional(datos):
     doc = ezdxf.new('R2010')
     msp = doc.modelspace()
     puntos = [Vec2(0, 0)]
     
-    # Dibujar Poligonal y procesar Curvas
-    for i, tramo in enumerate(datos['tramos']):
-        dist = float(tramo['distancia'])
-        # Aquí se aplicaría la conversión de rumbo a ángulo real
-        angulo = math.radians(float(tramo.get('angulo_deg', 0))) 
+    # Dibujar la geometría
+    for tramo in datos.get('tramos', []):
+        dist = float(tramo.get('distancia', 0))
+        # Simplificación de ángulo (en producción usarías rumbos reales)
+        angulo = math.radians(float(tramo.get('angulo_deg', 0)))
         
         nuevo_punto = puntos[-1] + Vec2(math.cos(angulo)*dist, math.sin(angulo)*dist)
         
         if tramo.get('tipo') == 'curva':
-            # Agregar arco usando bulge (simplificado)
-            msp.add_lwpolyline([puntos[-1], nuevo_punto], dxfattribs={'bulge': 0.5})
+            msp.add_lwpolyline([puntos[-1], nuevo_punto], dxfattribs={'bulge': 0.4})
         else:
             msp.add_line(puntos[-1], nuevo_punto)
-        
         puntos.append(nuevo_punto)
 
-    # --- GENERAR CUADRO DE RUMBOS Y DISTANCIAS ---
-    # Dibujamos una tabla simple con líneas y texto en el CAD
-    x_tabla, y_tabla = 20, 0 # Posición a la par del dibujo
-    msp.add_text("CUADRO DE RUMBOS Y DISTANCIAS", dxfattribs={'height': 0.5}).set_placement((x_tabla, y_tabla + 2))
-    
-    header = "EST | RUMBO | DISTANCIA | VÉRTICE"
-    msp.add_text(header, dxfattribs={'height': 0.3}).set_placement((x_tabla, y_tabla + 1))
-    
-    for i, tramo in enumerate(datos['tramos']):
-        linea = f"{i+1}-{i+2} | {tramo['rumbo']} | {tramo['distancia']}m"
-        msp.add_text(linea, dxfattribs={'height(0.25)'}).set_placement((x_tabla, y_tabla - (i * 0.5)))
+    # Crear Cuadro de Rumbos (Texto en el CAD)
+    y_offset = 0
+    msp.add_text("CUADRO DE DATOS TÉCNICOS", dxfattribs={'height': 0.7}).set_placement((20, 5))
+    for i, t in enumerate(datos.get('tramos', [])):
+        txt = f"Lado {i+1}: {t.get('rumbo')} - {t.get('distancia')}m"
+        msp.add_text(txt, dxfattribs={'height': 0.4}).set_placement((20, y_offset))
+        y_offset -= 1
 
-    path = "poligonal_tecnica.dxf"
+    path = "poligonal_norm_ai.dxf"
     doc.saveas(path)
     return path
 
-# --- INTERFAZ DE STREAMLIT ---
-st.set_page_config(page_title="Norm.AI - Topografía Pro")
-st.title("📐 Extractor de Poligonales y Cuadros Técnicos")
+# --- 4. INTERFAZ DE USUARIO ---
+archivo = st.file_uploader("Sube tu plano o memoria descriptiva (PDF/JPG/PNG)", type=["pdf", "jpg", "png"])
 
-if "GOOGLE_API_KEY" in st.secrets:
-    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-    model = genai.GenerativeModel('models/gemini-2.5-flash')
-else:
-    st.error("Configura tu API Key")
-    st.stop()
-
-archivo = st.file_uploader("Sube plano o memoria descriptiva", type=["pdf", "jpg", "png"])
-
-if archivo and st.button("Procesar Memoria Técnica"):
-    with st.spinner("Interpretando datos topográficos..."):
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+if archivo:
+    # EL BOTÓN TIENE UN 'KEY' ÚNICO PARA EVITAR EL ERROR DE DUPLICADO
+    if st.button("🚀 Iniciar Procesamiento Técnico", key="btn_principal_analisis"):
+        
+        intentos_maximos = 3
+        exito = False
+        
+        # 1. Preparar el archivo para Google
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{archivo.name.split('.')[-1]}") as tmp:
             tmp.write(archivo.getvalue())
-            google_file = genai.upload_file(path=tmp.name)
-
-        # Prompt ultra-específico
-        prompt = """
-        Analiza el documento y extrae la poligonal.
-        Busca rumbos, distancias y datos de curvas (radio, delta).
-        Devuelve un JSON estrictamente así:
-        {
-          "tramos": [
-            {"rumbo": "N 10°20' E", "distancia": 15.50, "tipo": "linea", "angulo_deg": 80},
-            {"rumbo": "S 80°00' E", "distancia": 5.00, "tipo": "curva", "radio": 10.0, "angulo_deg": -10}
-          ]
-        }
-        """
+            tmp_path = tmp.name
         
-        import time # Asegúrate de tener este import arriba
-
-# ... dentro del bloque del botón ...
-
-if st.button("Procesar Memoria Técnica"):
-    # Definimos el número de intentos
-    intentos_maximos = 3
-    intento_actual = 0
-    exito = False
-
-    while intento_actual < intentos_maximos and not exito:
         try:
-            with st.spinner(f"Analizando (Intento {intento_actual + 1}/{intentos_maximos})..."):
-                # Tu código original de procesamiento
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                    tmp.write(archivo.getvalue())
-                    google_file = genai.upload_file(path=tmp.name)
-
-                res = model.generate_content([prompt, google_file])
-                
-                # Si llega aquí, es que funcionó
-                exito = True
-                
-        except google.api_core.exceptions.ResourceExhausted:
-            intento_actual += 1
-            if intento_actual < intentos_maximos:
-                st.warning(f"⚠️ Cuota agotada. Esperando 10 segundos para reintentar...")
-                time.sleep(10) # Pausa técnica para liberar cuota
-            else:
-                st.error("🛑 Se agotaron los reintentos. Google está limitando las peticiones por ahora. Intenta de nuevo en un minuto.")
-        
-        except Exception as e:
-            st.error(f"Error inesperado: {e}")
-            break # Si es otro error, no reintentamos
-
-    if exito:
-        # Aquí sigue tu lógica de procesar el JSON y generar el DXF...
-        st.success("✅ Análisis completado con éxito.")
-        try:
-            # Extraer y limpiar JSON
-            json_data = json.loads(re.search(r'\{.*\}', res.text, re.DOTALL).group())
-            archivo_dxf = generar_poligonal_avanzada(json_data)
+            google_file = genai.upload_file(path=tmp_path)
             
-            st.success("✅ Geometría y Cuadro de Rumbos generados.")
-            
-            with open(archivo_dxf, "rb") as f:
-                st.download_button("📥 Descargar DXF para AutoCAD", f, file_name="poligonal_final.dxf")
-                
-            st.json(json_data) # Mostrar los datos extraídos para verificación
-        except Exception as e:
-            st.error(f"Error al procesar: {e}")
+            # 2. Bucle de reintentos para evitar ResourceExhausted
+            for i in range(intentos_maximos):
+                try:
+                    with st.spinner(f"Analizando con Gemini 2.5 (Intento {i+1})..."):
+                        prompt = """
+                        Analiza la poligonal. Extrae rumbos, distancias y curvas.
+                        Devuelve un JSON con este formato:
+                        {"tramos": [{"rumbo": "N 10E", "distancia": 20.5, "tipo": "linea", "angulo_deg": 45}]}
+                        """
+                        response = model.generate_content([prompt, google_file])
+                        
+                        # Intentar procesar el JSON
+                        json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
+                        if json_match:
+                            datos_ia = json.loads(json_match.group())
+                            
+                            # 3. Generar el archivo CAD
+                            ruta_dxf = generar_dxf_profesional(datos_ia)
+                            
+                            st.success("¡Geometría procesada exitosamente!")
+                            
+                            with open(ruta
