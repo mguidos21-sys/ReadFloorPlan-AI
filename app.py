@@ -13,7 +13,7 @@ import time
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Norm.AI - Topografía Profesional", layout="wide")
-st.title("📐 Extractor de Poligonales y Datos Legales")
+st.title("📐 Poligonales y Expedientes")
 
 MODELO_ACTIVO = 'gemini-2.5-flash'
 
@@ -24,18 +24,25 @@ else:
     st.error("⚠️ Configura la API Key.")
     st.stop()
 
-# --- 2. MOTOR GEOMÉTRICO ROBUSTO ---
+# --- 2. FILTROS MATEMÁTICOS DE EXTRACCIÓN ---
+
+def limpiar_numero(valor):
+    """Extrae estrictamente los números de un texto (ej: '30.00 m' -> 30.00)"""
+    if valor is None: return 0.0
+    # Busca el primer patrón que parezca un número decimal o entero
+    numeros = re.findall(r"[-+]?\d*\.\d+|\d+", str(valor).replace(',', '.'))
+    if numeros:
+        return float(numeros[0])
+    return 0.0
+
 def interpretar_rumbo_flexible(rumbo_str, rumbo_anterior=None):
     if not rumbo_str or not isinstance(rumbo_str, str): return rumbo_anterior
     
     r = rumbo_str.upper()
-    # Limpieza de términos salvadoreños
     r = r.replace('OESTE', 'W').replace('PONIENTE', 'W').replace('ESTE', 'E').replace('ORIENTE', 'E')
     r = r.replace('NORTE', 'N').replace('SUR', 'S')
     
-    # Regex para grados, minutos y segundos (permite cualquier separador)
     match = re.search(r'([NS])\s*(\d+)[°°º\s]*(\d+)[\'\s]*(\d+(?:\.\d+)?)?[\"”\s]*([EW])', r)
-    
     if match:
         ns, g, m, s, ew = match.groups()
         seg = float(s) if s else 0.0
@@ -46,7 +53,6 @@ def interpretar_rumbo_flexible(rumbo_str, rumbo_anterior=None):
         elif ns == 'S' and ew == 'W': ang = 270 - dec
         return math.radians(ang)
     
-    # Si es un ARCO sin rumbo, devolvemos el rumbo anterior para no romper la cadena
     return rumbo_anterior
 
 # --- 3. GENERADOR DE DXF ---
@@ -59,40 +65,38 @@ def crear_dxf_integral(datos):
     ultimo_rad = 0
     
     tramos = datos.get('tramos', [])
-    for i, t in enumerate(tramos):
-        try:
-            dist = float(t.get('distancia', 0))
-            rumbo_txt = str(t.get('rumbo', ''))
+    for t in tramos:
+        if not isinstance(t, dict): continue
+        
+        # AQUÍ ESTÁ LA SOLUCIÓN: Limpiamos la distancia forzosamente
+        dist = limpiar_numero(t.get('distancia'))
+        rumbo_txt = str(t.get('rumbo', ''))
+        
+        rad = interpretar_rumbo_flexible(rumbo_txt, ultimo_rad)
+        
+        if rad is not None and dist > 0:
+            p_final = puntos[-1] + Vec2(math.cos(rad) * dist, math.sin(rad) * dist)
             
-            # Buscamos el ángulo. Si no hay, intentamos usar el anterior.
-            rad = interpretar_rumbo_flexible(rumbo_txt, ultimo_rad)
+            # Dibujo de la entidad
+            if "ARCO" in rumbo_txt.upper() or t.get('tipo', '').lower() == 'curva':
+                msp.add_lwpolyline([puntos[-1], p_final], dxfattribs={'bulge': 0.3, 'color': 3, 'layer': 'LINDEROS'})
+            else:
+                msp.add_line(puntos[-1], p_final, dxfattribs={'color': 7, 'layer': 'LINDEROS'})
             
-            if rad is not None and dist > 0:
-                p_final = puntos[-1] + Vec2(math.cos(rad) * dist, math.sin(rad) * dist)
-                
-                # Dibujamos
-                if "ARCO" in rumbo_txt.upper() or t.get('tipo') == 'curva':
-                    # Representación visual del arco (bulge)
-                    msp.add_lwpolyline([puntos[-1], p_final], dxfattribs={'bulge': 0.3, 'color': 3})
-                else:
-                    msp.add_line(puntos[-1], p_final, dxfattribs={'color': 7})
-                
-                puntos.append(p_final)
-                ultimo_rad = rad # Guardamos para el siguiente tramo
-        except: continue
+            puntos.append(p_final)
+            ultimo_rad = rad
 
-    # Línea de cierre (Cierre de polígono)
+    # Cierre de polígono
     if len(puntos) > 2:
-        msp.add_line(puntos[-1], puntos[0], dxfattribs={'color': 1, 'linetype': 'DASHED'})
+        msp.add_line(puntos[-1], puntos[0], dxfattribs={'color': 1, 'linetype': 'DASHED', 'layer': 'CIERRE'})
 
-    # FICHA TÉCNICA (Sidebar dinámico)
-    x_side = max([p.x for p in puntos]) + 10 if len(puntos) > 1 else 30
-    y_ref = 30
+    # --- FICHA TÉCNICA ---
+    x_side = max([p.x for p in puntos]) + 15 if len(puntos) > 1 else 30
+    y_ref = max([p.y for p in puntos]) if len(puntos) > 1 else 30
     
-    # Textos Legales
     msp.add_text("FICHA TÉCNICA - NORM.AI", dxfattribs={'height': 1.5, 'color': 2}).set_placement((x_side, y_ref))
     y_ref -= 5
-    msp.add_text(f"PROPIETARIO: {str(datos.get('propietario', 'No detectado'))}", dxfattribs={'height': 0.8}).set_placement((x_side, y_ref))
+    msp.add_text(f"PROPIETARIO: {str(datos.get('propietario', 'N/A'))}", dxfattribs={'height': 0.8}).set_placement((x_side, y_ref))
     
     y_ref -= 6
     msp.add_text("COLINDANTES:", dxfattribs={'height': 1.0, 'color': 1}).set_placement((x_side, y_ref))
@@ -107,24 +111,25 @@ def crear_dxf_integral(datos):
     y_ref -= 1.5
     msp.add_text(f"QUEBRADAS/AGUA: {str(datos.get('quebradas', 'N/A'))}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
 
-    # Cuadro de Rumbos
     y_ref -= 8
     msp.add_text("CUADRO DE RUMBOS", dxfattribs={'height': 1.0, 'color': 4}).set_placement((x_side, y_ref))
     for i, t in enumerate(tramos):
+        if not isinstance(t, dict): continue
         y_ref -= 1.3
-        msp.add_text(f"L{i+1}: {t.get('rumbo')} | {t.get('distancia')}m", dxfattribs={'height': 0.4}).set_placement((x_side + 2, y_ref))
+        dist_limpia = limpiar_numero(t.get('distancia'))
+        msp.add_text(f"L{i+1}: {t.get('rumbo')} | {dist_limpia}m", dxfattribs={'height': 0.4}).set_placement((x_side + 2, y_ref))
 
-    temp_path = os.path.join(tempfile.gettempdir(), f"normai_final_{int(time.time())}.dxf")
+    temp_path = os.path.join(tempfile.gettempdir(), f"normai_{int(time.time())}.dxf")
     doc.saveas(temp_path)
     return temp_path
 
 # --- 4. INTERFAZ ---
-archivo = st.file_uploader("Sube el PDF (9 páginas)", type=["pdf"])
+archivo = st.file_uploader("Sube el Expediente PDF", type=["pdf"])
 
 if archivo:
-    if st.button("🚀 Procesar Expediente Completo"):
+    if st.button("🚀 Procesar Geometría y Legal"):
         try:
-            status = st.status("Escaneando documento...", expanded=True)
+            status = st.status("Escaneando folios...", expanded=True)
             doc_pdf = fitz.open(stream=archivo.read(), filetype="pdf")
             google_files = []
             
@@ -140,31 +145,30 @@ if archivo:
                 time.sleep(1); google_files = [genai.get_file(f.name) for f in google_files]
 
             prompt = """
-            Extract this info from the deed:
-            1. 'propietario': Full name.
-            2. 'colindantes': List ALL neighbors mentioned by cardinal point.
-            3. 'servidumbres' & 'quebradas': Descriptions.
-            4. 'tramos': Array with 'rumbo' and 'distancia'.
+            Extrae de la escritura:
+            1. 'propietario': Nombre.
+            2. 'colindantes': Lista (Norte, Sur...).
+            3. 'servidumbres' y 'quebradas'.
+            4. 'tramos': Lista de rumbos. IMPORTANTE: La 'distancia' debe ser SOLO NÚMERO (ej: 45.50), NO agregues letras ni 'm'.
             
-            Format strictly as JSON. No conversation.
+            Responde ÚNICAMENTE con el objeto JSON válido.
             """
             
             response = model.generate_content([prompt] + google_files)
-            # Limpieza de JSON
+            
             text = response.text
             clean_json = text[text.find('{'):text.rfind('}')+1]
             datos = json.loads(clean_json)
             
             ruta_dxf = crear_dxf_integral(datos)
             
-            status.update(label="✅ Expediente Finalizado", state="complete")
+            status.update(label="✅ Poligonal Generada", state="complete")
             with open(ruta_dxf, "rb") as f:
-                st.download_button("💾 DESCARGAR DXF", f, file_name="NormAI_Final.dxf")
-            st.json(datos)
+                st.download_button("💾 DESCARGAR DXF", f, file_name="Plano_Final.dxf")
             
             for f in google_files: genai.delete_file(f.name)
 
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"Fallo en motor: {e}")
 st.divider()
 st.caption(f"Norm.AI | Miguel Guidos - Arquitectura & Tecnología | 2026")
