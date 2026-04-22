@@ -1,7 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
 import ezdxf
-from ezdxf.math import Vec2
 import fitz  # PyMuPDF
 from PIL import Image
 import json
@@ -13,7 +12,7 @@ import time
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Norm.AI - Topografía Profesional", layout="wide")
-st.title("📐 Norm.AI: Expedientes (Geometría Segura)")
+st.title("📐 Norm.AI: Motor DXF de Alta Compatibilidad")
 
 MODELO_ACTIVO = 'gemini-2.5-flash'
 
@@ -24,7 +23,7 @@ else:
     st.error("⚠️ Configura la API Key.")
     st.stop()
 
-# --- 2. FILTROS DE LIMPIEZA ---
+# --- 2. FILTROS MATEMÁTICOS ---
 def sanitizar_texto(texto):
     if not texto: return "N/A"
     t = str(texto)
@@ -38,7 +37,7 @@ def limpiar_numero(valor):
     if numeros: return float(numeros[0])
     return 0.0
 
-def interpretar_rumbo_flexible(rumbo_str, rumbo_anterior=None):
+def interpretar_rumbo_flexible(rumbo_str, rumbo_anterior=0.0):
     if not rumbo_str or not isinstance(rumbo_str, str): return rumbo_anterior
     
     r = rumbo_str.upper()
@@ -57,14 +56,23 @@ def interpretar_rumbo_flexible(rumbo_str, rumbo_anterior=None):
         return math.radians(ang)
     return rumbo_anterior
 
-# --- 3. GENERADOR DE DXF (CERO CORRUPCIÓN) ---
+# --- 3. GENERADOR DE DXF (MÁXIMA SEGURIDAD) ---
 def crear_dxf_integral(datos):
-    doc = ezdxf.new('R2010') 
+    doc = ezdxf.new('R2000') # Formato AC1015 (A prueba de fallos)
     doc.header['$INSUNITS'] = 6 # Metros
+    
+    # 1. REGISTRAR CAPAS FORMALMENTE (Evita el colapso de Autodesk)
+    doc.layers.add('POLIGONAL', color=7)
+    doc.layers.add('TEXTOS_LEGALES', color=2)
+    doc.layers.add('TEXTOS_DATOS', color=4)
+    doc.layers.add('SEGURIDAD', color=1)
+    
     msp = doc.modelspace()
     
-    puntos = [Vec2(0, 0)]
-    ultimo_rad = 0
+    # 2. CONSTRUIR COORDENADAS CON REDONDEO
+    current_x, current_y = 0.0, 0.0
+    puntos_2d = [(current_x, current_y)]
+    ultimo_rad = 0.0
     
     tramos = datos.get('tramos', [])
     for t in tramos:
@@ -75,57 +83,60 @@ def crear_dxf_integral(datos):
         
         rad = interpretar_rumbo_flexible(rumbo_txt, ultimo_rad)
         
-        if rad is not None and dist > 0:
-            p_final = puntos[-1] + Vec2(math.cos(rad) * dist, math.sin(rad) * dist)
+        if rad is not None and dist > 0.0:
+            # Redondear a 4 decimales evita corrupción interna en el archivo
+            next_x = round(current_x + math.cos(rad) * dist, 4)
+            next_y = round(current_y + math.sin(rad) * dist, 4)
             
-            # EL ARREGLO: Trazamos líneas simples SIEMPRE. Si es arco, lo ponemos color Verde (3).
-            if "ARCO" in rumbo_txt.upper() or str(t.get('tipo', '')).lower() == 'curva':
-                msp.add_line(puntos[-1], p_final, dxfattribs={'color': 3, 'layer': 'ARCOS'})
-            else:
-                msp.add_line(puntos[-1], p_final, dxfattribs={'color': 7, 'layer': 'LINDEROS'})
-            
-            puntos.append(p_final)
+            puntos_2d.append((next_x, next_y))
+            current_x, current_y = next_x, next_y
             ultimo_rad = rad
 
-    if len(puntos) > 2:
-        msp.add_line(puntos[-1], puntos[0], dxfattribs={'color': 1, 'linetype': 'DASHED', 'layer': 'CIERRE'})
+    # 3. DIBUJAR GEOMETRÍA
+    if len(puntos_2d) > 1:
+        # Una sola polilínea unida
+        msp.add_lwpolyline(puntos_2d, dxfattribs={'layer': 'POLIGONAL'}, close=True)
+        max_x = max([p[0] for p in puntos_2d])
+        max_y = max([p[1] for p in puntos_2d])
+    else:
+        # Geometría de emergencia para evitar "Diseño Vacío"
+        msp.add_lwpolyline([(0,0), (10,0), (10,10), (0,10)], dxfattribs={'layer': 'SEGURIDAD'}, close=True)
+        msp.add_text("ERROR: NO SE ENCONTRARON RUMBOS VALIDOS", dxfattribs={'height': 1.0, 'layer': 'SEGURIDAD'}).set_placement((0, -2))
+        max_x, max_y = 10, 10
 
-    # --- FICHA TÉCNICA ---
-    x_side = max([p.x for p in puntos]) + 15 if len(puntos) > 1 else 30
-    y_ref = max([p.y for p in puntos]) if len(puntos) > 1 else 30
+    # 4. FICHA TÉCNICA
+    x_side = max_x + 15
+    y_ref = max_y if max_y > 30 else 30
     
-    msp.add_text("FICHA TECNICA - NORM.AI", dxfattribs={'height': 1.5, 'color': 2}).set_placement((x_side, y_ref))
+    msp.add_text("FICHA TECNICA - NORM.AI", dxfattribs={'height': 1.5, 'layer': 'TEXTOS_LEGALES'}).set_placement((x_side, y_ref))
     y_ref -= 5
     
     prop = sanitizar_texto(datos.get('propietario', 'N/A'))
-    msp.add_text(f"PROPIETARIO: {prop}", dxfattribs={'height': 0.8}).set_placement((x_side, y_ref))
+    msp.add_text(f"PROPIETARIO: {prop}", dxfattribs={'height': 0.8, 'layer': 'TEXTOS_DATOS'}).set_placement((x_side, y_ref))
     
     y_ref -= 6
-    msp.add_text("COLINDANTES:", dxfattribs={'height': 1.0, 'color': 1}).set_placement((x_side, y_ref))
+    msp.add_text("COLINDANTES:", dxfattribs={'height': 1.0, 'layer': 'TEXTOS_LEGALES'}).set_placement((x_side, y_ref))
     for col in datos.get('colindantes', []):
         y_ref -= 1.8
-        txt_col = sanitizar_texto(col)
-        msp.add_text(f"- {txt_col}", dxfattribs={'height': 0.6}).set_placement((x_side + 2, y_ref))
+        msp.add_text(f"- {sanitizar_texto(col)}", dxfattribs={'height': 0.6, 'layer': 'TEXTOS_DATOS'}).set_placement((x_side + 2, y_ref))
     
     y_ref -= 6
-    msp.add_text("NOTAS TECNICAS:", dxfattribs={'height': 1.0, 'color': 3}).set_placement((x_side, y_ref))
+    msp.add_text("NOTAS TECNICAS:", dxfattribs={'height': 1.0, 'layer': 'TEXTOS_LEGALES'}).set_placement((x_side, y_ref))
     y_ref -= 2
-    serv = sanitizar_texto(datos.get('servidumbres', 'Ninguna'))
-    msp.add_text(f"SERVIDUMBRES: {serv}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
+    msp.add_text(f"SERVIDUMBRES: {sanitizar_texto(datos.get('servidumbres', 'Ninguna'))}", dxfattribs={'height': 0.5, 'layer': 'TEXTOS_DATOS'}).set_placement((x_side + 2, y_ref))
     y_ref -= 1.5
-    queb = sanitizar_texto(datos.get('quebradas', 'N/A'))
-    msp.add_text(f"ZONAS HIDRICAS: {queb}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
+    msp.add_text(f"ZONAS HIDRICAS: {sanitizar_texto(datos.get('quebradas', 'N/A'))}", dxfattribs={'height': 0.5, 'layer': 'TEXTOS_DATOS'}).set_placement((x_side + 2, y_ref))
 
     y_ref -= 8
-    msp.add_text("CUADRO DE RUMBOS", dxfattribs={'height': 1.0, 'color': 4}).set_placement((x_side, y_ref))
+    msp.add_text("CUADRO DE RUMBOS", dxfattribs={'height': 1.0, 'layer': 'TEXTOS_LEGALES'}).set_placement((x_side, y_ref))
     for i, t in enumerate(tramos):
         if not isinstance(t, dict): continue
         y_ref -= 1.3
         dist_limpia = limpiar_numero(t.get('distancia'))
         rumbo_limpio = sanitizar_texto(t.get('rumbo'))
-        msp.add_text(f"L{i+1}: {rumbo_limpio} | {dist_limpia}m", dxfattribs={'height': 0.4}).set_placement((x_side + 2, y_ref))
+        msp.add_text(f"L{i+1}: {rumbo_limpio} | {dist_limpia}m", dxfattribs={'height': 0.4, 'layer': 'TEXTOS_DATOS'}).set_placement((x_side + 2, y_ref))
 
-    temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Seguro_{int(time.time())}.dxf")
+    temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Estricto_{int(time.time())}.dxf")
     doc.saveas(temp_path)
     return temp_path
 
@@ -133,9 +144,9 @@ def crear_dxf_integral(datos):
 archivo = st.file_uploader("Sube el Expediente PDF", type=["pdf"])
 
 if archivo:
-    if st.button("🚀 Procesar Geometría (Modo Seguro)"):
+    if st.button("🚀 Procesar (Compatibilidad Total)"):
         try:
-            status = st.status("Procesando linderos...", expanded=True)
+            status = st.status("Procesando linderos con estricta seguridad...", expanded=True)
             doc_pdf = fitz.open(stream=archivo.read(), filetype="pdf")
             google_files = []
             
@@ -174,5 +185,6 @@ if archivo:
 
         except Exception as e:
             st.error(f"Fallo en motor: {e}")
+            
 st.divider()
 st.caption(f"Norm.AI | Miguel Guidos - Arquitectura & Tecnología | 2026")
