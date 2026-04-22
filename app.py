@@ -1,6 +1,7 @@
 import streamlit as st
 import google.generativeai as genai
 import ezdxf
+from ezdxf.math import Vec2
 import fitz  # PyMuPDF
 from PIL import Image
 import json
@@ -11,8 +12,8 @@ import tempfile
 import time
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="Norm.AI - Topografía Profesional", layout="wide")
-st.title("📐 Generador de Poligonales")
+st.set_page_config(page_title="Norm.AI - Arquitectura El Salvador", layout="wide")
+st.title("📐 Norm.AI: Expediente Técnico y Poligonal")
 
 MODELO_ACTIVO = 'gemini-2.5-flash'
 
@@ -23,21 +24,21 @@ else:
     st.error("⚠️ Configura la API Key.")
     st.stop()
 
-# --- 2. FILTROS Y MATEMÁTICA ---
+# --- 2. FILTROS DE LIMPIEZA ---
 def sanitizar_texto(texto):
     if not texto: return "N/A"
     t = str(texto).replace('\n', ' ').strip()
-    return re.sub(r'[^\x20-\x7E\xA0-\xFF]', '', t)
+    return re.search(r'[^\x20-\x7E\xA0-\xFF]', t) # Limpieza básica de caracteres
+    return t
 
 def limpiar_numero(valor):
     if valor is None: return 0.0
     numeros = re.findall(r"[-+]?\d*\.\d+|\d+", str(valor).replace(',', '.'))
     return float(numeros[0]) if numeros else 0.0
 
-def interpretar_rumbo_profesional(rumbo_str, ultimo_rad=0.0):
+def interpretar_rumbo_sv(rumbo_str, ultimo_rad=0.0):
     if not rumbo_str or not isinstance(rumbo_str, str): return ultimo_rad
     r = rumbo_str.upper().replace('OESTE', 'W').replace('PONIENTE', 'W').replace('ORIENTE', 'E').replace('ESTE', 'E')
-    
     match = re.search(r'([NS])\s*(\d+)[°\s]*(\d+)[\'\s]*(\d+(?:\.\d+)?)?[\"”\s]*([EW])', r)
     if match:
         ns, g, m, s, ew = match.groups()
@@ -50,108 +51,135 @@ def interpretar_rumbo_profesional(rumbo_str, ultimo_rad=0.0):
         return math.radians(ang)
     return ultimo_rad
 
-# --- 3. GENERADOR DE DXF (CERO CORRUPCIÓN) ---
-def crear_dxf_profesional(datos):
-    doc = ezdxf.new('R2010') # Formato universal
+# --- 3. GENERADOR DE DXF (SECCIONADO Y EN ESPAÑOL) ---
+def crear_dxf_integral(datos):
+    doc = ezdxf.new('R2010') 
     doc.header['$INSUNITS'] = 6 # Metros
     msp = doc.modelspace()
     
-    # --- DIBUJO DE POLIGONAL ---
+    # --- DIBUJO DE GEOMETRÍA ---
     current_x, current_y = 0.0, 0.0
     puntos_dwg = [(current_x, current_y)]
     ultimo_rad = 0.0
     
     tramos = datos.get('tramos', [])
     for t in tramos:
+        if not isinstance(t, dict): continue
         dist = limpiar_numero(t.get('distancia'))
-        rumbo_txt = sanitizar_texto(t.get('rumbo', ''))
-        rad = interpretar_rumbo_profesional(rumbo_txt, ultimo_rad)
+        rumbo_txt = str(t.get('rumbo', ''))
+        rad = interpretar_rumbo_sv(rumbo_txt, ultimo_rad)
         
         if dist > 0:
             next_x = round(current_x + math.cos(rad) * dist, 4)
             next_y = round(current_y + math.sin(rad) * dist, 4)
-            
-            # Dibujamos línea sólida básica (color 7 = blanco/negro por defecto)
-            msp.add_line((current_x, current_y), (next_x, next_y), dxfattribs={'color': 7})
-            
+            # Línea de lindero estándar
+            color_linea = 3 if "ARCO" in rumbo_txt.upper() else 7
+            msp.add_line((current_x, current_y), (next_x, next_y), dxfattribs={'color': color_linea})
             current_x, current_y = next_x, next_y
             puntos_dwg.append((current_x, current_y))
             ultimo_rad = rad
 
-    # Cierre de polígono (SOLO COLOR, NADA DE 'DASHED')
     if len(puntos_dwg) > 2:
-        msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1}) # 1 = Rojo
+        msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1}) # Cierre en Rojo
 
-    # --- DIBUJO DE CUADRO TÉCNICO ---
-    x_tab = max([p[0] for p in puntos_dwg]) + 15 if len(puntos_dwg) > 1 else 25
-    y_tab = max([p[1] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 25
+    # --- FICHA TÉCNICA SECCIONADA (SIDEBAR) ---
+    max_x = max([p[0] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
+    max_y = max([p[1] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
+    x_side = max_x + 15
+    y_ref = max_y if max_y > 30 else 30
     
-    headers = ["TRAMO", "RUMBO", "DIST (m)"]
-    col_widths = [10, 25, 15]
+    # SECCIÓN 1: ENCABEZADO
+    msp.add_text("FICHA TÉCNICA - NORM.AI", dxfattribs={'height': 1.5, 'color': 2}).set_placement((x_side, y_ref))
+    y_ref -= 5
     
-    for i, h in enumerate(headers):
-        msp.add_text(h, dxfattribs={'height': 0.8, 'color': 2}).set_placement((x_tab + sum(col_widths[:i]), y_tab))
+    # SECCIÓN 2: DATOS LEGALES
+    msp.add_text("DATOS GENERALES:", dxfattribs={'height': 1.0, 'color': 1}).set_placement((x_side, y_ref))
+    y_ref -= 2.5
+    propietario = str(datos.get('propietario', 'No detectado'))
+    msp.add_text(f"PROPIETARIO: {propietario}", dxfattribs={'height': 0.7}).set_placement((x_side + 2, y_ref))
     
-    y_tab -= 2
+    y_ref -= 5
+    msp.add_text("COLINDANTES:", dxfattribs={'height': 1.0, 'color': 1}).set_placement((x_side, y_ref))
+    colindantes = datos.get('colindantes', [])
+    for col in colindantes:
+        y_ref -= 1.8
+        msp.add_text(f"- {str(col)}", dxfattribs={'height': 0.6}).set_placement((x_side + 2, y_ref))
+    
+    # SECCIÓN 3: NOTAS TÉCNICAS
+    y_ref -= 6
+    msp.add_text("NOTAS Y RESTRICCIONES:", dxfattribs={'height': 1.0, 'color': 3}).set_placement((x_side, y_ref))
+    y_ref -= 2.5
+    serv = str(datos.get('servidumbres', 'Ninguna mencionada'))
+    msp.add_text(f"SERVIDUMBRES: {serv}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
+    y_ref -= 1.5
+    queb = str(datos.get('quebradas', 'No menciona'))
+    msp.add_text(f"CUERPOS DE AGUA: {queb}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
+
+    # SECCIÓN 4: CUADRO DE RUMBOS
+    y_ref -= 8
+    msp.add_text("CUADRO DE RUMBOS Y DISTANCIAS", dxfattribs={'height': 1.0, 'color': 4}).set_placement((x_side, y_ref))
+    y_ref -= 1.0
+    # Encabezado de tabla
+    msp.add_text("Vértice   Rumbo                    Distancia", dxfattribs={'height': 0.6, 'color': 7}).set_placement((x_side + 2, y_ref))
+    y_ref -= 1.5
     for i, t in enumerate(tramos):
-        msp.add_text(f"L{i+1}", dxfattribs={'height': 0.6}).set_placement((x_tab, y_tab))
-        msp.add_text(sanitizar_texto(t.get('rumbo')), dxfattribs={'height': 0.6}).set_placement((x_tab + col_widths[0], y_tab))
-        msp.add_text(f"{limpiar_numero(t.get('distancia')):.2f}", dxfattribs={'height': 0.6}).set_placement((x_tab + col_widths[0] + col_widths[1], y_tab))
-        y_tab -= 1.5
+        if not isinstance(t, dict): continue
+        d_val = limpiar_numero(t.get('distancia'))
+        r_val = str(t.get('rumbo', ''))
+        msp.add_text(f"L{i+1}       {r_val.ljust(25)} {d_val:.2f} m", dxfattribs={'height': 0.45}).set_placement((x_side + 2, y_ref))
+        y_ref -= 1.3
 
-    y_tab -= 4
-    msp.add_text(f"PROPIETARIO: {sanitizar_texto(datos.get('propietario'))}", dxfattribs={'height': 1.0, 'color': 3}).set_placement((x_tab, y_tab))
-    y_tab -= 2
-    msp.add_text(f"NOTAS: {sanitizar_texto(datos.get('servidumbres'))}", dxfattribs={'height': 0.5}).set_placement((x_tab, y_tab))
-
-    temp = os.path.join(tempfile.gettempdir(), f"NormAI_{int(time.time())}.dxf")
-    doc.saveas(temp)
-    return temp
+    temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Esp_{int(time.time())}.dxf")
+    doc.saveas(temp_path)
+    return temp_path
 
 # --- 4. INTERFAZ ---
-archivo = st.file_uploader("Sube la Escritura (PDF)", type=["pdf"])
+archivo = st.file_uploader("Sube la Escritura (9 páginas)", type=["pdf"])
 
 if archivo:
-    if st.button("🚀 Generar Poligonal"):
+    if st.button("🚀 Generar Plano en Español"):
         try:
-            status = st.status("Analizando folios...", expanded=True)
+            status = st.status("Analizando expediente técnico...", expanded=True)
             doc_pdf = fitz.open(stream=archivo.read(), filetype="pdf")
             google_files = []
             
             for i in range(len(doc_pdf)):
-                p = doc_pdf.load_page(i)
-                pix = p.get_pixmap(matrix=fitz.Matrix(1.2, 1.2))
-                path = os.path.join(tempfile.gettempdir(), f"p_{i}.jpg")
-                Image.frombytes("RGB", [pix.width, pix.height], pix.samples).save(path, "JPEG", quality=80)
-                google_files.append(genai.upload_file(path=path))
-                os.remove(path)
+                page = doc_pdf.load_page(i)
+                pix = page.get_pixmap(matrix=fitz.Matrix(1.1, 1.1))
+                img_path = os.path.join(tempfile.gettempdir(), f"folio_{i}.jpg")
+                Image.frombytes("RGB", [pix.width, pix.height], pix.samples).save(img_path, "JPEG", quality=75)
+                google_files.append(genai.upload_file(path=img_path))
+                os.remove(img_path)
             
             while any(f.state.name == "PROCESSING" for f in google_files):
                 time.sleep(1); google_files = [genai.get_file(f.name) for f in google_files]
 
             prompt = """
-            Extract strictly for survey analysis:
-            1. 'propietario': Full name.
-            2. 'tramos': Array of objects with 'rumbo' (full text: N 00° 00' 00" E) and 'distancia' (number only).
-            3. 'servidumbres': Mention any restrictions or water bodies.
-            Return JSON.
+            Analiza esta escritura y extrae la información en ESPAÑOL para el expediente:
+            1. 'propietario': Nombre completo del titular.
+            2. 'colindantes': Lista de vecinos por punto cardinal.
+            3. 'servidumbres' y 'quebradas': Menciona cualquier restricción hídrica o de paso.
+            4. 'tramos': Lista de objetos con 'rumbo' (N 00°00'00" E) y 'distancia' (solo número).
+            
+            Formato JSON:
+            {"propietario": "...", "colindantes": ["Norte: ...", "Sur: ..."], "servidumbres": "...", "quebradas": "...", "tramos": []}
             """
             
             response = model.generate_content([prompt] + google_files)
-            clean_json = response.text[response.text.find('{'):response.text.rfind('}')+1]
+            text = response.text
+            clean_json = text[text.find('{'):text.rfind('}')+1]
             datos = json.loads(clean_json)
             
-            ruta = crear_dxf_profesional(datos)
-            status.update(label="✅ Poligonal y Cuadro Listos", state="complete")
+            ruta_dxf = crear_dxf_integral(datos)
             
-            with open(ruta, "rb") as f:
-                st.download_button("💾 DESCARGAR DXF", f, file_name="NormAI_Plano_Ingenieria.dxf")
+            status.update(label="✅ Plano Generado Exitosamente", state="complete")
+            with open(ruta_dxf, "rb") as f:
+                st.download_button("💾 DESCARGAR DXF", f, file_name="Plano_NormAI_Final.dxf")
             
-            st.json(datos)
             for f in google_files: genai.delete_file(f.name)
 
         except Exception as e:
-            st.error(f"Fallo en motor: {e}")
+            st.error(f"Error en el motor: {e}")
             
 st.divider()
 st.caption(f"Norm.AI | Miguel Guidos - Arquitectura & Tecnología | 2026")
