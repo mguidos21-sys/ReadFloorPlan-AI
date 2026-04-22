@@ -13,14 +13,15 @@ import tempfile
 import time
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="Norm.AI - Topografía Integral", layout="wide")
-st.title("📐 Extractor de Poligonales Completas")
-st.markdown("Este módulo une todo el documento para generar la poligonal cerrada.")
+st.set_page_config(page_title="Norm.AI - Topografía 2.5", layout="wide")
+st.title("📐 Extractor de Poligonales (Gemini 2.5 Stable)")
+
+# USAMOS EL MODELO QUE APARECE EN TU LISTA
+MODELO_DISPONIBLE = 'gemini-2.5-flash'
 
 if "GOOGLE_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-    # Usamos Gemini 1.5 Flash: es el mejor equilibrando cuota y capacidad multi-página
-    model = genai.GenerativeModel('models/gemini-1.5-flash')
+    model = genai.GenerativeModel(model_name=MODELO_DISPONIBLE)
 else:
     st.error("⚠️ Configura la API Key en los Secrets.")
     st.stop()
@@ -31,12 +32,12 @@ def generar_dxf(tramos):
     msp = doc.modelspace()
     puntos = [Vec2(0, 0)]
     
-    # Dibujar geometría
     for t in tramos:
         try:
-            d = float(t.get('distancia', 0))
-            a = math.radians(float(t.get('angulo_deg', 0)))
-            np = puntos[-1] + Vec2(math.cos(a) * d, math.sin(a) * d)
+            dist = float(t.get('distancia', 0))
+            # Convertimos el ángulo que nos da la IA
+            ang = math.radians(float(t.get('angulo_deg', 0)))
+            np = puntos[-1] + Vec2(math.cos(ang) * dist, math.sin(ang) * dist)
             
             if t.get('tipo') == 'curva':
                 msp.add_lwpolyline([puntos[-1], np], dxfattribs={'bulge': 0.4})
@@ -45,96 +46,84 @@ def generar_dxf(tramos):
             puntos.append(np)
         except: continue
         
-    # Dibujar línea de cierre si no cerró automáticamente
-    if len(puntos) > 2 and puntos[0].distance(puntos[-1]) > 0.01:
-        msp.add_line(puntos[-1], puntos[0], dxfattribs={'layer': 'CIERRE_NORM'})
-
-    # Cuadro Técnico a la derecha
-    x_tab = 20
-    msp.add_text("CUADRO DE RUMBOS (UNIFICADO)", dxfattribs={'height': 0.8}).set_placement((x_tab, 5))
+    # Crear Cuadro de Datos a un lado
+    x_tab = max([p.x for p in puntos]) + 10 if puntos else 20
+    msp.add_text("CUADRO TÉCNICO NORM.AI", dxfattribs={'height': 0.8}).set_placement((x_tab, 5))
     for i, t in enumerate(tramos):
         txt = f"L{i+1}: {t.get('rumbo')} | {t.get('distancia')}m"
         msp.add_text(txt, dxfattribs={'height': 0.4}).set_placement((x_tab, -(i * 0.7)))
 
-    path = os.path.join(tempfile.gettempdir(), f"poligonal_completa.dxf")
+    path = os.path.join(tempfile.gettempdir(), f"poligonal_2.5_{int(time.time())}.dxf")
     doc.saveas(path)
     return path
 
 # --- 3. INTERFAZ ---
-archivo_pdf = st.file_uploader("Sube el PDF completo de la escritura", type=["pdf"])
+archivo_pdf = st.file_uploader("Sube el PDF de la escritura (9 páginas)", type=["pdf"])
 
 if archivo_pdf:
-    if st.button("🚀 Generar Poligonal Cerrada"):
+    if st.button("🚀 Procesar Poligonal Completa"):
         try:
             doc_pdf = fitz.open(stream=archivo_pdf.read(), filetype="pdf")
             num_pags = len(doc_pdf)
-            st.info(f"Cosiendo {num_pags} páginas para análisis global...")
+            st.info(f"Preparando {num_pags} páginas para Gemini 2.5...")
 
-            # 1. RASTERIZADO UNIFICADO: Creamos una "tira" gigante de páginas
-            with st.spinner("Creando imagen de ultra-baja resolución para la IA..."):
-                all_pages = []
-                # Zoom bajo (0.8) para que quepan muchas páginas sin agotar tokens
-                matrix = fitz.Matrix(0.8, 0.8) 
-                
+            imagenes_para_ia = []
+            
+            # 1. CONVERTIR CADA PÁGINA EN IMAGEN
+            with st.spinner("Leyendo páginas..."):
                 for i in range(num_pags):
                     page = doc_pdf.load_page(i)
-                    pix = page.get_pixmap(matrix=matrix)
+                    pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+                    img_path = os.path.join(tempfile.gettempdir(), f"p_{i}.jpg")
+                    
+                    # Guardar como JPG optimizado
                     img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                    all_pages.append(img)
-                
-                # Unir verticalmente las páginas en una sola imagen
-                w = max(i.size[0] for i in all_pages)
-                h = sum(i.size[1] for i in all_pages)
-                combined_img = Image.new("RGB", (w, h))
-                
-                y_offset = 0
-                for img in all_pages:
-                    combined_img.paste(img, (0, y_offset))
-                    y_offset += img.size[1]
-                
-                # Guardar imagen temporal
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-                    combined_img.save(tmp.name, "JPEG", quality=70) # Compresión extra
-                    tmp_path = tmp.name
+                    img.thumbnail((1200, 1200))
+                    img.save(img_path, "JPEG", quality=80)
+                    
+                    # Subir a Google
+                    g_file = genai.upload_file(path=img_path)
+                    imagenes_para_ia.append(g_file)
+                    os.remove(img_path)
 
-            # 2. SUBIR A GOOGLE (UN SOLO ARCHIVO)
-            st.info("Subiendo documento consolidado...")
-            g_file = genai.upload_file(path=tmp_path)
-            while g_file.state.name == "PROCESSING":
+            # 2. ESPERAR PROCESAMIENTO
+            while any(f.state.name == "PROCESSING" for f in imagenes_para_ia):
                 time.sleep(1)
-                g_file = genai.get_file(g_file.name)
+                imagenes_para_ia = [genai.get_file(f.name) for f in imagenes_para_ia]
 
-            # 3. PROMPT DE ANÁLISIS GLOBAL
+            # 3. PROMPT DE INGENIERÍA
             prompt = """
-            Actúa como experto topógrafo. Se adjunta un documento de 9 páginas unido en una sola imagen.
-            Contiene la descripción técnica de un terreno grande.
-            1. Busca la sección de rumbos y distancias que comienza en una página y continúa en las siguientes.
-            2. Extrae la secuencia completa y secuencial de tramos.
-            3. Devuelve estrictamente un JSON unificado:
-            {"tramos": [{"rumbo": "N 10°E", "distancia": 25.0, "tipo": "linea", "angulo_deg": 45}]}
+            Eres un experto en topografía salvadoreña. Se adjuntan varias páginas de una escritura.
+            1. Busca la descripción técnica de rumbos y distancias. 
+            2. Conecta los datos de todas las páginas para formar una sola poligonal continua.
+            3. Devuelve estrictamente un JSON unificado con TODOS los tramos encontrados:
+            {"tramos": [{"rumbo": "N 10° 15' 20\" E", "distancia": 25.40, "tipo": "linea", "angulo_deg": 45.0}]}
             """
 
-            with st.spinner("La IA está leyendo y uniendo todo el polígono..."):
-                response = model.generate_content([prompt, g_file])
+            with st.spinner("La IA está uniendo los rumbos..."):
+                # Enviamos el prompt y la lista completa de imágenes
+                response = model.generate_content([prompt] + imagenes_para_ia)
                 
                 match = re.search(r'\{.*\}', response.text, re.DOTALL)
                 if match:
                     datos = json.loads(match.group())
-                    ruta = generar_dxf(datos)
-                    
-                    st.success(f"✅ Poligonal de {len(datos['tramos'])} tramos generada.")
-                    with open(ruta, "rb") as f:
-                        st.download_button("💾 Descargar DXF Unificado", f, file_name="poligonal.dxf")
-                    st.json(datos)
+                    if datos.get('tramos'):
+                        ruta = generar_dxf(datos['tramos'])
+                        st.success(f"✅ Se generaron {len(datos['tramos'])} tramos.")
+                        with open(ruta, "rb") as f:
+                            st.download_button("💾 Descargar DXF Final", f, file_name="poligonal_completa.dxf")
+                        st.json(datos)
+                    else:
+                        st.warning("No se detectaron tramos técnicos en las páginas.")
                 else:
-                    st.error("No se pudo extraer una estructura de rumbos válida de todo el documento.")
+                    st.error("La IA no pudo estructurar los datos. Verifica que el PDF sea legible.")
 
-            # Limpieza
-            genai.delete_file(g_file.name)
-            os.remove(tmp_path)
+            # Limpiar archivos de Google
+            for f in imagenes_para_ia:
+                genai.delete_file(f.name)
 
         except Exception as e:
-            st.error(f"Error crítico: {e}")
+            st.error(f"Error detectado: {e}")
 
 st.divider()
 st.caption(f"Norm.AI | Miguel Guidos - Arquitectura & Tecnología | 2026")
