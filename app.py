@@ -13,19 +13,28 @@ import tempfile
 import time
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="Norm.AI - Topografía 2026", layout="wide")
-st.title("📐 Extractor de Poligonales (Versión Estándar 2.0)")
+st.set_page_config(page_title="Norm.AI - Topografía Pro", layout="wide")
+st.title("📐 Extractor de Poligonales (Versión Producción)")
 
-# --- MODELO ACTUALIZADO ---
-# Cambiamos al modelo estable para evitar el error de disponibilidad
-MODELO_ESTABLE = 'gemini-2.0-flash'
+# --- MODELO ESTÁNDAR DE PRODUCCIÓN ---
+# gemini-1.5-flash es el modelo más estable para cuentas de pago.
+MODEL_NAME = 'gemini-1.5-flash'
 
 if "GOOGLE_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-    model = genai.GenerativeModel(model_name=MODELO_ESTABLE)
+    model = genai.GenerativeModel(model_name=MODEL_NAME)
 else:
-    st.error("⚠️ Falta la API Key en los Secrets de Streamlit.")
+    st.error("⚠️ Configura la API Key en los Secrets.")
     st.stop()
+
+# --- DIAGNÓSTICO: LISTAR MODELOS (Solo si falla) ---
+def listar_modelos_disponibles():
+    st.write("🔍 Buscando modelos disponibles en tu cuenta...")
+    try:
+        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        st.write("Modelos que puedes usar:", models)
+    except Exception as e:
+        st.error(f"No se pudo obtener la lista: {e}")
 
 # --- 2. LÓGICA CAD ---
 def generar_dxf(tramos):
@@ -35,6 +44,7 @@ def generar_dxf(tramos):
     for t in tramos:
         try:
             d = float(t.get('distancia', 0))
+            # Ángulo en radianes para AutoCAD
             a = math.radians(float(t.get('angulo_deg', 0)))
             np = puntos[-1] + Vec2(math.cos(a) * d, math.sin(a) * d)
             if t.get('tipo') == 'curva':
@@ -49,28 +59,26 @@ def generar_dxf(tramos):
     return path
 
 # --- 3. PROCESAMIENTO ---
-archivo_pdf = st.file_uploader("Sube el PDF de la escritura", type=["pdf"])
+archivo_pdf = st.file_uploader("Sube el PDF (9 páginas)", type=["pdf"])
 
 if archivo_pdf:
-    if st.button("🚀 Iniciar Extracción"):
+    if st.button("🚀 Iniciar Análisis con Gemini 1.5"):
         try:
             doc_pdf = fitz.open(stream=archivo_pdf.read(), filetype="pdf")
             num_pags = len(doc_pdf)
-            st.info(f"Procesando {num_pags} páginas con {MODELO_ESTABLE}...")
+            st.info(f"Analizando {num_pags} páginas...")
 
             todos_los_tramos = []
             progreso = st.progress(0)
             
-            prompt = (
-                "Extract survey data (bearings/distances). "
-                "Output ONLY JSON: {'tramos': [{'rumbo': 'N 10E', 'distancia': 25.0, 'tipo': 'linea', 'angulo_deg': 45}]}"
-            )
+            # Prompt optimizado
+            prompt = "Extract survey bearings and distances. Return ONLY JSON: {'tramos': [{'rumbo': 'N10E', 'distancia': 25.0, 'tipo': 'linea', 'angulo_deg': 45}]}"
 
             for i in range(num_pags):
-                with st.spinner(f"Analizando página {i+1}..."):
-                    # Optimización de imagen para no agotar el saldo rápido
+                with st.spinner(f"Página {i+1}..."):
                     pagina = doc_pdf.load_page(i)
-                    pix = pagina.get_pixmap(matrix=fitz.Matrix(1.1, 1.1))
+                    # Bajamos la resolución un poco más para asegurar que NO gastes tokens de más
+                    pix = pagina.get_pixmap(matrix=fitz.Matrix(1.0, 1.0))
                     img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
                     img.thumbnail((1000, 1000))
                     
@@ -84,6 +92,7 @@ if archivo_pdf:
                         time.sleep(1)
                         g_file = genai.get_file(g_file.name)
 
+                    # LLAMADA A LA IA
                     response = model.generate_content([prompt, g_file])
                     match = re.search(r'\{.*\}', response.text, re.DOTALL)
                     if match:
@@ -96,19 +105,22 @@ if archivo_pdf:
                     os.remove(tmp_path)
                     
                     progreso.progress((i + 1) / num_pags)
-                    time.sleep(4) # Pausa de seguridad para la cuota
+                    time.sleep(3) # Pausa para flujo de cuota
 
             if todos_los_tramos:
                 st.success(f"✅ Se encontraron {len(todos_los_tramos)} tramos.")
                 ruta = generar_dxf(todos_los_tramos)
                 with open(ruta, "rb") as f:
-                    st.download_button("💾 Descargar DXF", f, file_name="poligonal.dxf")
+                    st.download_button("💾 Descargar DXF", f, file_name="poligonal_normai.dxf")
                 st.json(todos_los_tramos)
             else:
-                st.warning("No se detectaron datos en el PDF.")
+                st.warning("No se detectaron datos técnicos.")
 
         except Exception as e:
-            st.error(f"Error crítico: {e}")
+            st.error(f"Error detectado: {e}")
+            # Si el error es un 404, mostramos qué modelos sí funcionan
+            if "404" in str(e):
+                listar_modelos_disponibles()
 
 st.divider()
 st.caption(f"Norm.AI | Miguel Guidos - Arquitectura & Tecnología | 2026")
