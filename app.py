@@ -13,7 +13,7 @@ import time
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Norm.AI - Topografía & Catastro", layout="wide")
-st.title("📐 Generador de Poligonal")
+st.title("📐 Norm.AI: Generador de Expedientes Técnicos (Versión Robusta)")
 
 MODELO_ACTIVO = 'gemini-2.5-flash'
 
@@ -24,12 +24,14 @@ else:
     st.error("⚠️ Configura la API Key en los Secrets.")
     st.stop()
 
-# --- 2. LÓGICA DE GEOMETRÍA ---
+# --- 2. TRADUCTOR GEOMÉTRICO (Soporta N, S, Poniente, Oriente) ---
 def parsear_rumbo_sv(rumbo_str):
-    if not rumbo_str or str(rumbo_str).lower() == 'none': return None
-    r = str(rumbo_str).upper().replace('OESTE', 'W').replace('PONIENTE', 'W').replace('ESTE', 'E').replace('ORIENTE', 'E')
+    if not rumbo_str or not isinstance(rumbo_str, str): return None
+    # Traducción de términos de escrituras salvadoreñas
+    r = rumbo_str.upper().replace('OESTE', 'W').replace('PONIENTE', 'W').replace('ESTE', 'E').replace('ORIENTE', 'E')
     r = r.replace('NORTE', 'N').replace('SUR', 'S')
     
+    # Regex flexible para grados, minutos y segundos opcionales
     match = re.search(r'([NS])\s*(\d+)[°°º]?\s*(\d+)\'?\s*(?:(\d+(?:\.\d+)?)\s*")?\s*([EW])', r)
     if match:
         ns, g, m, s, ew = match.groups()
@@ -42,82 +44,91 @@ def parsear_rumbo_sv(rumbo_str):
         return math.radians(ang)
     return None
 
-# --- 3. GENERADOR DE PLANO (DXF) ---
-def crear_dxf_blindado(datos):
+# --- 3. GENERADOR DE DXF CON FICHA TÉCNICA ---
+def crear_dxf_profesional(datos):
     doc = ezdxf.new('R2018')
-    doc.header['$INSUNITS'] = 6 # Metros
+    doc.header['$INSUNITS'] = 6 # Definir Metros
     msp = doc.modelspace()
     
-    # --- DIBUJO DE POLIGONAL ---
+    # --- CAPA 1: POLIGONAL UNIDA ---
     puntos = [Vec2(0, 0)]
     tramos = datos.get('tramos', [])
     
-    # Validamos que 'tramos' sea una lista
     if isinstance(tramos, list):
         for t in tramos:
-            # AQUÍ ESTÁ EL ARREGLO AL ERROR 'STR' OBJECT HAS NO ATTRIBUTE 'GET'
-            if not isinstance(t, dict): continue 
-            
+            if not isinstance(t, dict): continue # Evita el error 'str object'
             try:
                 dist = float(t.get('distancia', 0))
                 rad = parsear_rumbo_sv(t.get('rumbo'))
                 if rad is not None and dist > 0:
                     p_final = puntos[-1] + Vec2(math.cos(rad) * dist, math.sin(rad) * dist)
-                    
-                    if t.get('tipo') == 'curva':
-                        msp.add_lwpolyline([puntos[-1], p_final], dxfattribs={'bulge': 0.4, 'color': 3})
-                    else:
-                        msp.add_line(puntos[-1], p_final, dxfattribs={'color': 7})
                     puntos.append(p_final)
             except: continue
     
-    ancho_max = max([p.x for p in puntos]) if len(puntos) > 1 else 0
+    # Dibujar polilínea si hay datos
+    ancho_dibujo = 20 # Offset inicial por defecto
     if len(puntos) > 1:
-        msp.add_line(puntos[-1], puntos[0], dxfattribs={'linetype': 'DASHED', 'color': 1})
+        msp.add_lwpolyline(puntos, dxfattribs={'color': 7, 'layer': 'LINDEROS'})
+        # Línea de cierre en rojo punteado
+        msp.add_line(puntos[-1], puntos[0], dxfattribs={'color': 1, 'linetype': 'DASHED'})
+        ancho_dibujo = max([p.x for p in puntos]) + 15
 
-    # --- BLOQUE DE INFORMACIÓN (Sidebar) ---
-    x_sidebar = ancho_max + 20
+    # --- CAPA 2: FICHA TÉCNICA (SIDEBAR) ---
+    x_side = ancho_dibujo
     y_ref = 30
     
-    msp.add_text("EXPEDIENTE TÉCNICO - NORM.AI", dxfattribs={'height': 1.5, 'color': 2}).set_placement((x_sidebar, y_ref))
+    # Datos Generales
+    msp.add_text("EXPEDIENTE TÉCNICO - NORM.AI", dxfattribs={'height': 1.5, 'color': 2}).set_placement((x_side, y_ref))
     y_ref -= 5
-    msp.add_text(f"PROPIETARIO: {datos.get('propietario', 'No detectado')}", dxfattribs={'height': 0.8}).set_placement((x_sidebar, y_ref))
+    propietario = str(datos.get('propietario', 'No detectado'))
+    msp.add_text(f"PROPIETARIO: {propietario}", dxfattribs={'height': 0.8}).set_placement((x_side, y_ref))
     
+    # Colindantes (Limpieza de formato)
     y_ref -= 8
-    msp.add_text("COLINDANTES:", dxfattribs={'height': 1.0, 'color': 1}).set_placement((x_sidebar, y_ref))
-    
+    msp.add_text("COLINDANTES:", dxfattribs={'height': 1.0, 'color': 1}).set_placement((x_side, y_ref))
     colindantes = datos.get('colindantes', [])
     if isinstance(colindantes, list):
         for col in colindantes:
             y_ref -= 2
-            txt_col = str(col) # Convertimos a string por seguridad
-            msp.add_text(f"- {txt_col}", dxfattribs={'height': 0.6}).set_placement((x_sidebar + 2, y_ref))
+            msp.add_text(f"- {str(col)}", dxfattribs={'height': 0.6}).set_placement((x_side + 2, y_ref))
     
+    # Restricciones
     y_ref -= 8
-    msp.add_text("RESTRICCIONES:", dxfattribs={'height': 1.0, 'color': 3}).set_placement((x_sidebar, y_ref))
+    msp.add_text("NOTAS Y RESTRICCIONES:", dxfattribs={'height': 1.0, 'color': 3}).set_placement((x_side, y_ref))
     y_ref -= 3
-    msp.add_text(f"SERVIDUMBRES: {datos.get('servidumbres', 'N/A')}", dxfattribs={'height': 0.5}).set_placement((x_sidebar + 2, y_ref))
+    msp.add_text(f"SERVIDUMBRES: {datos.get('servidumbres', 'Ninguna')}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
     y_ref -= 2
-    msp.add_text(f"QUEBRADAS: {datos.get('quebradas', 'N/A')}", dxfattribs={'height': 0.5}).set_placement((x_sidebar + 2, y_ref))
+    msp.add_text(f"ZONAS HÍDRICAS/QUEBRADAS: {datos.get('quebradas', 'No menciona')}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
 
-    temp_file = os.path.join(tempfile.gettempdir(), f"plano_{int(time.time())}.dxf")
-    doc.saveas(temp_file)
-    return temp_file
+    # Cuadro de Rumbos
+    y_ref -= 10
+    msp.add_text("CUADRO DE RUMBOS", dxfattribs={'height': 1.0, 'color': 4}).set_placement((x_side, y_ref))
+    if isinstance(tramos, list):
+        for i, t in enumerate(tramos):
+            if not isinstance(t, dict): continue
+            y_ref -= 1.5
+            txt = f"L{i+1}: {t.get('rumbo')} | {t.get('distancia')}m"
+            msp.add_text(txt, dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
+
+    temp_path = os.path.join(tempfile.gettempdir(), f"expediente_{int(time.time())}.dxf")
+    doc.saveas(temp_path)
+    return temp_path
 
 # --- 4. INTERFAZ ---
-archivo = st.file_uploader("Sube el PDF de la escritura", type=["pdf"])
+archivo = st.file_uploader("Sube la Escritura (PDF de 9 páginas)", type=["pdf"])
 
 if archivo:
-    if st.button("🚀 Generar Poligonal y Datos"):
+    if st.button("🚀 Iniciar Extracción Integral"):
         try:
-            status = st.status("Procesando información...", expanded=True)
+            status = st.status("Analizando expedientes y linderos...", expanded=True)
             doc_pdf = fitz.open(stream=archivo.read(), filetype="pdf")
             google_files = []
             
+            # Subida de folios
             for i in range(len(doc_pdf)):
                 page = doc_pdf.load_page(i)
                 pix = page.get_pixmap(matrix=fitz.Matrix(1.1, 1.1))
-                img_path = os.path.join(tempfile.gettempdir(), f"p_{i}.jpg")
+                img_path = os.path.join(tempfile.gettempdir(), f"page_{i}.jpg")
                 Image.frombytes("RGB", [pix.width, pix.height], pix.samples).save(img_path, "JPEG", quality=75)
                 google_files.append(genai.upload_file(path=img_path))
                 os.remove(img_path)
@@ -127,14 +138,15 @@ if archivo:
                 google_files = [genai.get_file(f.name) for f in google_files]
 
             prompt = """
-            Extract from this property deed:
-            1. 'propietario': Name.
-            2. 'colindantes': List of neighbors (N, S, E, W).
-            3. 'servidumbres' & 'quebradas': Mention if any.
-            4. 'tramos': List of dicts with 'rumbo', 'distancia', 'tipo'.
+            Eres un experto en catastro salvadoreño. Analiza este documento y extrae:
+            1. 'propietario': Nombre completo del titular.
+            2. 'colindantes': Lista de vecinos (Norte, Sur, Oriente, Poniente).
+            3. 'servidumbres': Menciona si existen pasos, acueductos o líneas eléctricas.
+            4. 'quebradas': Menciona si existen cuerpos de agua o zonas de protección.
+            5. 'tramos': Lista de rumbos y distancias.
             
-            JSON format:
-            {"propietario": "...", "colindantes": ["..."], "servidumbres": "...", "quebradas": "...", "tramos": [{"rumbo": "...", "distancia": 0.0, "tipo": "linea"}]}
+            IMPORTANTE: Los 'tramos' deben ser una lista de OBJETOS JSON, no texto.
+            Ej: {"rumbo": "N 10°E", "distancia": 15.0, "tipo": "linea"}
             """
             
             response = model.generate_content([prompt] + google_files)
@@ -142,16 +154,16 @@ if archivo:
             
             if match:
                 datos = json.loads(match.group())
-                ruta_dxf = crear_dxf_blindado(datos)
-                status.update(label="✅ Proceso finalizado", state="complete")
+                ruta_dxf = crear_dxf_profesional(datos)
+                status.update(label="✅ Expediente Procesado", state="complete")
                 with open(ruta_dxf, "rb") as f:
-                    st.download_button("💾 DESCARGAR DXF", f, file_name="Plano_NormAI.dxf")
+                    st.download_button("💾 DESCARGAR DXF INTEGRAL", f, file_name="NormAI_Proyecto.dxf")
                 st.json(datos)
             
             for f in google_files: genai.delete_file(f.name)
 
         except Exception as e:
-            st.error(f"Error en el motor: {e}")
+            st.error(f"Fallo en el motor: {e}")
 
 st.divider()
 st.caption(f"Norm.AI | Miguel Guidos - Arquitectura & Tecnología | 2026")
