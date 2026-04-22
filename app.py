@@ -13,7 +13,7 @@ import time
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Norm.AI - Topografía 2.5", layout="wide")
-st.title("📐 Extractor de Poligonales (Modo Ultra-Ligero)")
+st.title("📐 Extractor de Poligonales ")
 
 # MODELO ESTABLE 2026
 MODELO_ACTIVO = 'gemini-2.5-flash'
