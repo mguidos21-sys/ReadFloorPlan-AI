@@ -12,7 +12,7 @@ import time
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Norm.AI - Topografía Profesional", layout="wide")
-st.title("📐 Norm.AI: Motor DXF de Alta Compatibilidad")
+st.title("📐 Generador de Poligonal")
 
 MODELO_ACTIVO = 'gemini-2.5-flash'
 
@@ -56,12 +56,11 @@ def interpretar_rumbo_flexible(rumbo_str, rumbo_anterior=0.0):
         return math.radians(ang)
     return rumbo_anterior
 
-# --- 3. GENERADOR DE DXF (MÁXIMA SEGURIDAD) ---
+# --- 3. GENERADOR DE DXF ---
 def crear_dxf_integral(datos):
-    doc = ezdxf.new('R2000') # Formato AC1015 (A prueba de fallos)
-    doc.header['$INSUNITS'] = 6 # Metros
+    doc = ezdxf.new('R2000') 
+    doc.header['$INSUNITS'] = 6 
     
-    # 1. REGISTRAR CAPAS FORMALMENTE (Evita el colapso de Autodesk)
     doc.layers.add('POLIGONAL', color=7)
     doc.layers.add('TEXTOS_LEGALES', color=2)
     doc.layers.add('TEXTOS_DATOS', color=4)
@@ -69,7 +68,6 @@ def crear_dxf_integral(datos):
     
     msp = doc.modelspace()
     
-    # 2. CONSTRUIR COORDENADAS CON REDONDEO
     current_x, current_y = 0.0, 0.0
     puntos_2d = [(current_x, current_y)]
     ultimo_rad = 0.0
@@ -84,7 +82,6 @@ def crear_dxf_integral(datos):
         rad = interpretar_rumbo_flexible(rumbo_txt, ultimo_rad)
         
         if rad is not None and dist > 0.0:
-            # Redondear a 4 decimales evita corrupción interna en el archivo
             next_x = round(current_x + math.cos(rad) * dist, 4)
             next_y = round(current_y + math.sin(rad) * dist, 4)
             
@@ -92,19 +89,15 @@ def crear_dxf_integral(datos):
             current_x, current_y = next_x, next_y
             ultimo_rad = rad
 
-    # 3. DIBUJAR GEOMETRÍA
     if len(puntos_2d) > 1:
-        # Una sola polilínea unida
         msp.add_lwpolyline(puntos_2d, dxfattribs={'layer': 'POLIGONAL'}, close=True)
         max_x = max([p[0] for p in puntos_2d])
         max_y = max([p[1] for p in puntos_2d])
     else:
-        # Geometría de emergencia para evitar "Diseño Vacío"
         msp.add_lwpolyline([(0,0), (10,0), (10,10), (0,10)], dxfattribs={'layer': 'SEGURIDAD'}, close=True)
         msp.add_text("ERROR: NO SE ENCONTRARON RUMBOS VALIDOS", dxfattribs={'height': 1.0, 'layer': 'SEGURIDAD'}).set_placement((0, -2))
         max_x, max_y = 10, 10
 
-    # 4. FICHA TÉCNICA
     x_side = max_x + 15
     y_ref = max_y if max_y > 30 else 30
     
@@ -136,7 +129,7 @@ def crear_dxf_integral(datos):
         rumbo_limpio = sanitizar_texto(t.get('rumbo'))
         msp.add_text(f"L{i+1}: {rumbo_limpio} | {dist_limpia}m", dxfattribs={'height': 0.4, 'layer': 'TEXTOS_DATOS'}).set_placement((x_side + 2, y_ref))
 
-    temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Estricto_{int(time.time())}.dxf")
+    temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_{int(time.time())}.dxf")
     doc.saveas(temp_path)
     return temp_path
 
@@ -144,9 +137,9 @@ def crear_dxf_integral(datos):
 archivo = st.file_uploader("Sube el Expediente PDF", type=["pdf"])
 
 if archivo:
-    if st.button("🚀 Procesar (Compatibilidad Total)"):
+    if st.button("🚀 Procesar (Sistema Anti-Caídas)"):
         try:
-            status = st.status("Procesando linderos con estricta seguridad...", expanded=True)
+            status = st.status("Preparando archivos...", expanded=True)
             doc_pdf = fitz.open(stream=archivo.read(), filetype="pdf")
             google_files = []
             
@@ -170,7 +163,26 @@ if archivo:
             NO agregues unidades a la distancia, solo el numero.
             """
             
-            response = model.generate_content([prompt] + google_files)
+            # --- SISTEMA DE REINTENTOS PARA EVITAR EL ERROR 503 ---
+            max_intentos = 3
+            response = None
+            
+            for intento in range(max_intentos):
+                try:
+                    status.update(label=f"Conectando con Google... (Intento {intento + 1}/3)")
+                    response = model.generate_content([prompt] + google_files)
+                    break # Si funciona, sale del bucle
+                except Exception as e:
+                    if "503" in str(e) and intento < max_intentos - 1:
+                        status.update(label=f"Servidor ocupado. Reintentando en 5 segundos...")
+                        time.sleep(5)
+                    else:
+                        raise e # Si es otro error o se acabaron los intentos, muestra la falla real
+            
+            if response is None:
+                raise Exception("No se pudo obtener respuesta de Google después de 3 intentos.")
+
+            status.update(label="Analizando resultados...")
             text = response.text
             clean_json = text[text.find('{'):text.rfind('}')+1]
             datos = json.loads(clean_json)
