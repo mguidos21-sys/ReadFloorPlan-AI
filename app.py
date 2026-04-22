@@ -13,7 +13,7 @@ import time
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Norm.AI - Topografía Profesional", layout="wide")
-st.title("📐 Generador de Poligonales")
+st.title("📐 Norm.AI: Expedientes (Geometría Segura)")
 
 MODELO_ACTIVO = 'gemini-2.5-flash'
 
@@ -24,20 +24,15 @@ else:
     st.error("⚠️ Configura la API Key.")
     st.stop()
 
-# --- 2. FILTROS DE LIMPIEZA TOTAL ---
-
+# --- 2. FILTROS DE LIMPIEZA ---
 def sanitizar_texto(texto):
-    """Elimina saltos de línea y caracteres que corrompen el archivo DXF"""
     if not texto: return "N/A"
     t = str(texto)
-    # Reemplaza saltos de línea y tabulaciones con espacios
     t = re.sub(r'[\n\r\t]+', ' ', t)
-    # Elimina caracteres extraños de control
     t = re.sub(r'[^\x20-\x7E\xA0-\xFF]', '', t)
     return t.strip()
 
 def limpiar_numero(valor):
-    """Extrae estrictamente los números"""
     if valor is None: return 0.0
     numeros = re.findall(r"[-+]?\d*\.\d+|\d+", str(valor).replace(',', '.'))
     if numeros: return float(numeros[0])
@@ -62,10 +57,9 @@ def interpretar_rumbo_flexible(rumbo_str, rumbo_anterior=None):
         return math.radians(ang)
     return rumbo_anterior
 
-# --- 3. GENERADOR DE DXF (COMPATIBILIDAD MÁXIMA) ---
+# --- 3. GENERADOR DE DXF (CERO CORRUPCIÓN) ---
 def crear_dxf_integral(datos):
-    # Usamos R2010 porque nunca da problemas con visores ni versiones de AutoCAD
-    doc = ezdxf.new('R2010')
+    doc = ezdxf.new('R2010') 
     doc.header['$INSUNITS'] = 6 # Metros
     msp = doc.modelspace()
     
@@ -84,25 +78,25 @@ def crear_dxf_integral(datos):
         if rad is not None and dist > 0:
             p_final = puntos[-1] + Vec2(math.cos(rad) * dist, math.sin(rad) * dist)
             
+            # EL ARREGLO: Trazamos líneas simples SIEMPRE. Si es arco, lo ponemos color Verde (3).
             if "ARCO" in rumbo_txt.upper() or str(t.get('tipo', '')).lower() == 'curva':
-                msp.add_lwpolyline([puntos[-1], p_final], dxfattribs={'bulge': 0.3, 'color': 3, 'layer': 'POLIGONO'})
+                msp.add_line(puntos[-1], p_final, dxfattribs={'color': 3, 'layer': 'ARCOS'})
             else:
-                msp.add_line(puntos[-1], p_final, dxfattribs={'color': 7, 'layer': 'POLIGONO'})
+                msp.add_line(puntos[-1], p_final, dxfattribs={'color': 7, 'layer': 'LINDEROS'})
             
             puntos.append(p_final)
             ultimo_rad = rad
 
     if len(puntos) > 2:
-        msp.add_line(puntos[-1], puntos[0], dxfattribs={'color': 1, 'linetype': 'DASHED', 'layer': 'CIERRE_ERROR'})
+        msp.add_line(puntos[-1], puntos[0], dxfattribs={'color': 1, 'linetype': 'DASHED', 'layer': 'CIERRE'})
 
-    # --- FICHA TÉCNICA (TEXTOS LIMPIOS) ---
+    # --- FICHA TÉCNICA ---
     x_side = max([p.x for p in puntos]) + 15 if len(puntos) > 1 else 30
     y_ref = max([p.y for p in puntos]) if len(puntos) > 1 else 30
     
     msp.add_text("FICHA TECNICA - NORM.AI", dxfattribs={'height': 1.5, 'color': 2}).set_placement((x_side, y_ref))
     y_ref -= 5
     
-    # Textos pasando por la aspiradora (sanitizar_texto)
     prop = sanitizar_texto(datos.get('propietario', 'N/A'))
     msp.add_text(f"PROPIETARIO: {prop}", dxfattribs={'height': 0.8}).set_placement((x_side, y_ref))
     
@@ -131,7 +125,7 @@ def crear_dxf_integral(datos):
         rumbo_limpio = sanitizar_texto(t.get('rumbo'))
         msp.add_text(f"L{i+1}: {rumbo_limpio} | {dist_limpia}m", dxfattribs={'height': 0.4}).set_placement((x_side + 2, y_ref))
 
-    temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_{int(time.time())}.dxf")
+    temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Seguro_{int(time.time())}.dxf")
     doc.saveas(temp_path)
     return temp_path
 
@@ -139,9 +133,9 @@ def crear_dxf_integral(datos):
 archivo = st.file_uploader("Sube el Expediente PDF", type=["pdf"])
 
 if archivo:
-    if st.button("🚀 Procesar Archivo Seguro"):
+    if st.button("🚀 Procesar Geometría (Modo Seguro)"):
         try:
-            status = st.status("Leyendo y limpiando datos...", expanded=True)
+            status = st.status("Procesando linderos...", expanded=True)
             doc_pdf = fitz.open(stream=archivo.read(), filetype="pdf")
             google_files = []
             
@@ -166,17 +160,13 @@ if archivo:
             """
             
             response = model.generate_content([prompt] + google_files)
-            
             text = response.text
             clean_json = text[text.find('{'):text.rfind('}')+1]
             datos = json.loads(clean_json)
             
             ruta_dxf = crear_dxf_integral(datos)
             
-            # Verificamos tamaño para estar seguros
-            tamano_kb = os.path.getsize(ruta_dxf) / 1024
-            
-            status.update(label=f"✅ DXF Generado Seguro ({tamano_kb:.1f} KB)", state="complete")
+            status.update(label="✅ DXF Generado Exitosamente", state="complete")
             with open(ruta_dxf, "rb") as f:
                 st.download_button("💾 DESCARGAR DXF", f, file_name="NormAI_Plano.dxf")
             
