@@ -12,25 +12,31 @@ import tempfile
 import time
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="Norm.AI - Topografía El Salvador", layout="wide")
-st.title("📐 Extractor de Poligonales (Versión Pro-Curvas)")
+st.set_page_config(page_title="Norm.AI - Topografía 2.5", layout="wide")
+st.title("📐 Extractor de Poligonales (Versión Estabilidad 2026)")
 
-# MODELO CONFIRMADO EN TU LISTA
-MODELO_ACTIVO = 'gemini-2.0-flash'
+# MODELO ACTUALIZADO SEGÚN TU LISTA DE DISPONIBLES
+MODELO_PRINCIPAL = 'gemini-2.5-flash'
 
 if "GOOGLE_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-    model = genai.GenerativeModel(model_name=MODELO_ACTIVO)
+    # Intentamos conectar con el modelo 2.5
+    try:
+        model = genai.GenerativeModel(model_name=MODELO_PRINCIPAL)
+    except:
+        st.error("Error al inicializar el modelo. Verifica tu API Key.")
+        st.stop()
 else:
-    st.error("⚠️ Falta API Key en Secrets.")
+    st.error("⚠️ Configura la API Key en los Secrets de Streamlit.")
     st.stop()
 
-# --- 2. MATEMÁTICA TOPOGRÁFICA ROBUSTA ---
-def parsear_rumbo_sv(rumbo_str):
+# --- 2. MATEMÁTICA TOPOGRÁFICA (N, S, Poniente, Oriente) ---
+def convertir_rumbo_a_radianes(rumbo_str):
     if not rumbo_str or rumbo_str.lower() == 'none': return None
     
-    # Reemplazos para términos salvadoreños comunes
-    r = rumbo_str.upper().replace('OESTE', 'W').replace('PONIENTE', 'W').replace('ESTE', 'E').replace('ORIENTE', 'E')
+    # Limpieza de términos salvadoreños
+    r = rumbo_str.upper().replace('OESTE', 'W').replace('PONIENTE', 'W')
+    r = r.replace('ESTE', 'E').replace('ORIENTE', 'E')
     r = r.replace('NORTE', 'N').replace('SUR', 'S')
     
     # Regex flexible: Grados y minutos obligatorios, segundos opcionales
@@ -41,6 +47,7 @@ def parsear_rumbo_sv(rumbo_str):
         segundos = float(s) if s else 0.0
         dec = float(g) + float(m)/60 + segundos/3600
         
+        # Conversión a sistema cartesiano (N=90°, E=0°, S=270°, W=180°)
         if ns == 'N' and ew == 'E': ang = 90 - dec
         elif ns == 'N' and ew == 'W': ang = 90 + dec
         elif ns == 'S' and ew == 'E': ang = 270 + dec
@@ -48,8 +55,8 @@ def parsear_rumbo_sv(rumbo_str):
         return math.radians(ang)
     return None
 
-# --- 3. LÓGICA DE DIBUJO ---
-def generar_dxf_final(tramos):
+# --- 3. LÓGICA DE DIBUJO CAD ---
+def crear_archivo_dxf(tramos):
     doc = ezdxf.new('R2010')
     msp = doc.modelspace()
     puntos = [Vec2(0, 0)]
@@ -57,82 +64,83 @@ def generar_dxf_final(tramos):
     for i, t in enumerate(tramos):
         try:
             dist = float(t.get('distancia', 0))
-            ang_rad = parsear_rumbo_sv(t.get('rumbo', ''))
+            rad = convertir_rumbo_a_radianes(t.get('rumbo', ''))
             
-            if ang_rad is not None:
-                # Calculamos el siguiente vértice
-                np = puntos[-1] + Vec2(math.cos(ang_rad) * dist, math.sin(ang_rad) * dist)
+            if rad is not None:
+                # Calcular siguiente vértice
+                p_final = puntos[-1] + Vec2(math.cos(rad) * dist, math.sin(rad) * dist)
                 
-                # Manejo de Curvas
+                # Dibujar Curva o Línea
                 if t.get('tipo') == 'curva':
-                    # Si no hay radio, usamos un radio genérico (distancia * 1.5) para que se vea la curva
-                    radio = float(t.get('radio')) if t.get('radio') else dist * 1.2
-                    # El bulge define la panza de la curva (0.4 es una curva suave estándar)
-                    msp.add_lwpolyline([puntos[-1], np], dxfattribs={'bulge': 0.4, 'color': 3})
+                    # Bulge de 0.4 para representar curvatura visual si no hay radio exacto
+                    msp.add_lwpolyline([puntos[-1], p_final], dxfattribs={'bulge': 0.4, 'color': 3})
                 else:
-                    msp.add_line(puntos[-1], np)
+                    msp.add_line(puntos[-1], p_final)
                 
-                puntos.append(np)
+                puntos.append(p_final)
             else:
-                st.warning(f"No se pudo entender el rumbo del tramo {i+1}: {t.get('rumbo')}")
-        except Exception as e:
+                st.warning(f"Salto en tramo {i+1}: Formato de rumbo no reconocido.")
+        except Exception:
             continue
 
-    # Cierre automático visual (Línea punteada al punto de origen)
+    # Línea de cierre (opcional, en color rojo para verificar error de cierre)
     if len(puntos) > 2:
         msp.add_line(puntos[-1], puntos[0], dxfattribs={'linetype': 'DASHED', 'color': 1})
 
-    # Cuadro de Datos
-    x_c = 30
-    msp.add_text("CUADRO TÉCNICO NORM.AI", dxfattribs={'height': 0.8}).set_placement((x_c, 5))
+    # Cuadro de datos técnico
+    x_offset = 35
+    msp.add_text("CUADRO TÉCNICO NORM.AI", dxfattribs={'height': 0.8}).set_placement((x_offset, 10))
     for i, t in enumerate(tramos):
-        txt = f"L{i+1}: {t.get('rumbo')} | {t.get('distancia')}m"
-        msp.add_text(txt, dxfattribs={'height': 0.4}).set_placement((x_c, -(i * 0.8)))
+        info = f"L{i+1}: {t.get('rumbo')} | {t.get('distancia')}m"
+        msp.add_text(info, dxfattribs={'height': 0.5}).set_placement((x_offset, 10 - (i+1)*1.2))
 
-    path = os.path.join(tempfile.gettempdir(), f"poligonal_{int(time.time())}.dxf")
-    doc.saveas(path)
-    return path
+    temp_path = os.path.join(tempfile.gettempdir(), f"topografia_{int(time.time())}.dxf")
+    doc.saveas(temp_path)
+    return temp_path
 
-# --- 4. INTERFAZ Y PROCESAMIENTO ---
-archivo_pdf = st.file_uploader("Sube el PDF de la escritura", type=["pdf"])
+# --- 4. PROCESAMIENTO ---
+archivo = st.file_uploader("Sube el PDF de la escritura (9 páginas)", type=["pdf"])
 
-if archivo_pdf:
-    if st.button("🚀 Generar Plano Técnico Completo"):
+if archivo:
+    if st.button("🚀 Procesar Poligonal con Gemini 2.5"):
         try:
-            doc_pdf = fitz.open(stream=archivo_pdf.read(), filetype="pdf")
+            doc_pdf = fitz.open(stream=archivo.read(), filetype="pdf")
             num_pags = len(doc_pdf)
             
-            with st.spinner("Uniendo y analizando páginas..."):
-                all_imgs = []
+            with st.spinner("Unificando páginas de la escritura..."):
+                paginas_img = []
                 for i in range(num_pags):
-                    page = doc_pdf.load_page(i)
-                    pix = page.get_pixmap(matrix=fitz.Matrix(1.2, 1.2))
+                    p = doc_pdf.load_page(i)
+                    pix = p.get_pixmap(matrix=fitz.Matrix(1.2, 1.2))
                     img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                    all_imgs.append(img)
+                    paginas_img.append(img)
                 
-                # Unión vertical de las 9 páginas
-                w = max(i.size[0] for i in all_imgs)
-                h = sum(i.size[1] for i in all_imgs)
-                combined = Image.new("RGB", (w, h))
-                curr_y = 0
-                for img in all_imgs:
-                    combined.paste(img, (0, curr_y))
-                    curr_y += img.size[1]
+                # Unir verticalmente
+                ancho = max(p.size[0] for p in paginas_img)
+                alto = sum(p.size[1] for p in paginas_img)
+                img_final = Image.new("RGB", (ancho, alto))
+                y_coord = 0
+                for p in paginas_img:
+                    img_final.paste(p, (0, y_coord))
+                    y_coord += p.size[1]
                 
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-                    combined.save(tmp.name, "JPEG", quality=80)
-                    tmp_path = tmp.name
+                    img_final.save(tmp.name, "JPEG", quality=75)
+                    ruta_tmp = tmp.name
 
-            # Procesamiento con Gemini
-            g_file = genai.upload_file(path=tmp_path)
-            while g_file.state.name == "PROCESSING": time.sleep(1); g_file = genai.get_file(g_file.name)
+            # Subida a Google Cloud
+            st.info(f"Analizando con motor {MODELO_PRINCIPAL}...")
+            g_file = genai.upload_file(path=ruta_tmp)
+            while g_file.state.name == "PROCESSING":
+                time.sleep(1)
+                g_file = genai.get_file(g_file.name)
 
             prompt = """
-            Eres un experto en topografía de El Salvador. 
-            Analiza el documento y busca el Cuadro de Rumbos o la Memoria Descriptiva.
-            1. Los rumbos pueden decir 'Norte', 'Sur', 'Poniente' u 'Oriente'.
-            2. Identifica si un tramo es curvo. Busca la palabra 'Radio' o 'Arco' en el texto.
-            3. Devuelve estrictamente un JSON con todos los linderos en orden:
+            Eres un experto en catastro de El Salvador. 
+            Analiza el documento y extrae la descripción técnica de rumbos y distancias.
+            1. Conecta los datos de todas las páginas.
+            2. Identifica tramos rectos y curvos (busca palabras como 'Radio' o 'Arco').
+            3. Devuelve estrictamente un JSON:
             {"tramos": [{"rumbo": "N 87° 40' W", "distancia": 6.0, "tipo": "curva", "radio": 10.0}]}
             """
 
@@ -140,20 +148,20 @@ if archivo_pdf:
             match = re.search(r'\{.*\}', response.text, re.DOTALL)
             
             if match:
-                datos = json.loads(match.group())
-                ruta_dxf = generar_dxf_final(datos['tramos'])
-                st.success("✅ Poligonal generada con éxito.")
+                datos_json = json.loads(match.group())
+                ruta_dxf = crear_archivo_dxf(datos_json['tramos'])
+                st.success("✅ ¡Geometría generada!")
                 with open(ruta_dxf, "rb") as f:
-                    st.download_button("💾 Descargar DXF para AutoCAD", f, file_name="poligonal.dxf")
-                st.json(datos)
+                    st.download_button("💾 Descargar DXF para AutoCAD", f, file_name="poligonal_2.5.dxf")
+                st.json(datos_json)
             else:
-                st.error("La IA no pudo estructurar los rumbos. Intenta con una imagen más clara.")
-            
+                st.error("No se pudo extraer la estructura de datos. Verifica la legibilidad del PDF.")
+
             genai.delete_file(g_file.name)
-            os.remove(tmp_path)
+            os.remove(ruta_tmp)
 
         except Exception as e:
-            st.error(f"Error crítico en el motor: {e}")
+            st.error(f"Error en el motor: {e}")
 
 st.divider()
 st.caption(f"Norm.AI | Miguel Guidos - Arquitectura & Tecnología | 2026")
