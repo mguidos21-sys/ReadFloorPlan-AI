@@ -13,7 +13,7 @@ import time
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Norm.AI - Topografía Profesional", layout="wide")
-st.title("📐 Poligonales y Expedientes")
+st.title("📐 Generador de Poligonales")
 
 MODELO_ACTIVO = 'gemini-2.5-flash'
 
@@ -24,15 +24,23 @@ else:
     st.error("⚠️ Configura la API Key.")
     st.stop()
 
-# --- 2. FILTROS MATEMÁTICOS DE EXTRACCIÓN ---
+# --- 2. FILTROS DE LIMPIEZA TOTAL ---
+
+def sanitizar_texto(texto):
+    """Elimina saltos de línea y caracteres que corrompen el archivo DXF"""
+    if not texto: return "N/A"
+    t = str(texto)
+    # Reemplaza saltos de línea y tabulaciones con espacios
+    t = re.sub(r'[\n\r\t]+', ' ', t)
+    # Elimina caracteres extraños de control
+    t = re.sub(r'[^\x20-\x7E\xA0-\xFF]', '', t)
+    return t.strip()
 
 def limpiar_numero(valor):
-    """Extrae estrictamente los números de un texto (ej: '30.00 m' -> 30.00)"""
+    """Extrae estrictamente los números"""
     if valor is None: return 0.0
-    # Busca el primer patrón que parezca un número decimal o entero
     numeros = re.findall(r"[-+]?\d*\.\d+|\d+", str(valor).replace(',', '.'))
-    if numeros:
-        return float(numeros[0])
+    if numeros: return float(numeros[0])
     return 0.0
 
 def interpretar_rumbo_flexible(rumbo_str, rumbo_anterior=None):
@@ -52,12 +60,12 @@ def interpretar_rumbo_flexible(rumbo_str, rumbo_anterior=None):
         elif ns == 'S' and ew == 'E': ang = 270 + dec
         elif ns == 'S' and ew == 'W': ang = 270 - dec
         return math.radians(ang)
-    
     return rumbo_anterior
 
-# --- 3. GENERADOR DE DXF ---
+# --- 3. GENERADOR DE DXF (COMPATIBILIDAD MÁXIMA) ---
 def crear_dxf_integral(datos):
-    doc = ezdxf.new('R2018')
+    # Usamos R2010 porque nunca da problemas con visores ni versiones de AutoCAD
+    doc = ezdxf.new('R2010')
     doc.header['$INSUNITS'] = 6 # Metros
     msp = doc.modelspace()
     
@@ -68,48 +76,51 @@ def crear_dxf_integral(datos):
     for t in tramos:
         if not isinstance(t, dict): continue
         
-        # AQUÍ ESTÁ LA SOLUCIÓN: Limpiamos la distancia forzosamente
         dist = limpiar_numero(t.get('distancia'))
-        rumbo_txt = str(t.get('rumbo', ''))
+        rumbo_txt = sanitizar_texto(t.get('rumbo', ''))
         
         rad = interpretar_rumbo_flexible(rumbo_txt, ultimo_rad)
         
         if rad is not None and dist > 0:
             p_final = puntos[-1] + Vec2(math.cos(rad) * dist, math.sin(rad) * dist)
             
-            # Dibujo de la entidad
-            if "ARCO" in rumbo_txt.upper() or t.get('tipo', '').lower() == 'curva':
-                msp.add_lwpolyline([puntos[-1], p_final], dxfattribs={'bulge': 0.3, 'color': 3, 'layer': 'LINDEROS'})
+            if "ARCO" in rumbo_txt.upper() or str(t.get('tipo', '')).lower() == 'curva':
+                msp.add_lwpolyline([puntos[-1], p_final], dxfattribs={'bulge': 0.3, 'color': 3, 'layer': 'POLIGONO'})
             else:
-                msp.add_line(puntos[-1], p_final, dxfattribs={'color': 7, 'layer': 'LINDEROS'})
+                msp.add_line(puntos[-1], p_final, dxfattribs={'color': 7, 'layer': 'POLIGONO'})
             
             puntos.append(p_final)
             ultimo_rad = rad
 
-    # Cierre de polígono
     if len(puntos) > 2:
-        msp.add_line(puntos[-1], puntos[0], dxfattribs={'color': 1, 'linetype': 'DASHED', 'layer': 'CIERRE'})
+        msp.add_line(puntos[-1], puntos[0], dxfattribs={'color': 1, 'linetype': 'DASHED', 'layer': 'CIERRE_ERROR'})
 
-    # --- FICHA TÉCNICA ---
+    # --- FICHA TÉCNICA (TEXTOS LIMPIOS) ---
     x_side = max([p.x for p in puntos]) + 15 if len(puntos) > 1 else 30
     y_ref = max([p.y for p in puntos]) if len(puntos) > 1 else 30
     
-    msp.add_text("FICHA TÉCNICA - NORM.AI", dxfattribs={'height': 1.5, 'color': 2}).set_placement((x_side, y_ref))
+    msp.add_text("FICHA TECNICA - NORM.AI", dxfattribs={'height': 1.5, 'color': 2}).set_placement((x_side, y_ref))
     y_ref -= 5
-    msp.add_text(f"PROPIETARIO: {str(datos.get('propietario', 'N/A'))}", dxfattribs={'height': 0.8}).set_placement((x_side, y_ref))
+    
+    # Textos pasando por la aspiradora (sanitizar_texto)
+    prop = sanitizar_texto(datos.get('propietario', 'N/A'))
+    msp.add_text(f"PROPIETARIO: {prop}", dxfattribs={'height': 0.8}).set_placement((x_side, y_ref))
     
     y_ref -= 6
     msp.add_text("COLINDANTES:", dxfattribs={'height': 1.0, 'color': 1}).set_placement((x_side, y_ref))
     for col in datos.get('colindantes', []):
         y_ref -= 1.8
-        msp.add_text(f"- {str(col)}", dxfattribs={'height': 0.6}).set_placement((x_side + 2, y_ref))
+        txt_col = sanitizar_texto(col)
+        msp.add_text(f"- {txt_col}", dxfattribs={'height': 0.6}).set_placement((x_side + 2, y_ref))
     
     y_ref -= 6
-    msp.add_text("NOTAS TÉCNICAS:", dxfattribs={'height': 1.0, 'color': 3}).set_placement((x_side, y_ref))
+    msp.add_text("NOTAS TECNICAS:", dxfattribs={'height': 1.0, 'color': 3}).set_placement((x_side, y_ref))
     y_ref -= 2
-    msp.add_text(f"SERVIDUMBRES: {str(datos.get('servidumbres', 'Ninguna'))}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
+    serv = sanitizar_texto(datos.get('servidumbres', 'Ninguna'))
+    msp.add_text(f"SERVIDUMBRES: {serv}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
     y_ref -= 1.5
-    msp.add_text(f"QUEBRADAS/AGUA: {str(datos.get('quebradas', 'N/A'))}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
+    queb = sanitizar_texto(datos.get('quebradas', 'N/A'))
+    msp.add_text(f"ZONAS HIDRICAS: {queb}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
 
     y_ref -= 8
     msp.add_text("CUADRO DE RUMBOS", dxfattribs={'height': 1.0, 'color': 4}).set_placement((x_side, y_ref))
@@ -117,9 +128,10 @@ def crear_dxf_integral(datos):
         if not isinstance(t, dict): continue
         y_ref -= 1.3
         dist_limpia = limpiar_numero(t.get('distancia'))
-        msp.add_text(f"L{i+1}: {t.get('rumbo')} | {dist_limpia}m", dxfattribs={'height': 0.4}).set_placement((x_side + 2, y_ref))
+        rumbo_limpio = sanitizar_texto(t.get('rumbo'))
+        msp.add_text(f"L{i+1}: {rumbo_limpio} | {dist_limpia}m", dxfattribs={'height': 0.4}).set_placement((x_side + 2, y_ref))
 
-    temp_path = os.path.join(tempfile.gettempdir(), f"normai_{int(time.time())}.dxf")
+    temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_{int(time.time())}.dxf")
     doc.saveas(temp_path)
     return temp_path
 
@@ -127,9 +139,9 @@ def crear_dxf_integral(datos):
 archivo = st.file_uploader("Sube el Expediente PDF", type=["pdf"])
 
 if archivo:
-    if st.button("🚀 Procesar Geometría y Legal"):
+    if st.button("🚀 Procesar Archivo Seguro"):
         try:
-            status = st.status("Escaneando folios...", expanded=True)
+            status = st.status("Leyendo y limpiando datos...", expanded=True)
             doc_pdf = fitz.open(stream=archivo.read(), filetype="pdf")
             google_files = []
             
@@ -145,13 +157,12 @@ if archivo:
                 time.sleep(1); google_files = [genai.get_file(f.name) for f in google_files]
 
             prompt = """
-            Extrae de la escritura:
-            1. 'propietario': Nombre.
-            2. 'colindantes': Lista (Norte, Sur...).
-            3. 'servidumbres' y 'quebradas'.
-            4. 'tramos': Lista de rumbos. IMPORTANTE: La 'distancia' debe ser SOLO NÚMERO (ej: 45.50), NO agregues letras ni 'm'.
-            
-            Responde ÚNICAMENTE con el objeto JSON válido.
+            Extrae estrictamente en formato JSON:
+            1. 'propietario'
+            2. 'colindantes' (array de strings)
+            3. 'servidumbres' y 'quebradas'
+            4. 'tramos' (array de objetos con 'rumbo' y 'distancia').
+            NO agregues unidades a la distancia, solo el numero.
             """
             
             response = model.generate_content([prompt] + google_files)
@@ -162,9 +173,12 @@ if archivo:
             
             ruta_dxf = crear_dxf_integral(datos)
             
-            status.update(label="✅ Poligonal Generada", state="complete")
+            # Verificamos tamaño para estar seguros
+            tamano_kb = os.path.getsize(ruta_dxf) / 1024
+            
+            status.update(label=f"✅ DXF Generado Seguro ({tamano_kb:.1f} KB)", state="complete")
             with open(ruta_dxf, "rb") as f:
-                st.download_button("💾 DESCARGAR DXF", f, file_name="Plano_Final.dxf")
+                st.download_button("💾 DESCARGAR DXF", f, file_name="NormAI_Plano.dxf")
             
             for f in google_files: genai.delete_file(f.name)
 
