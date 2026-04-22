@@ -12,29 +12,26 @@ import tempfile
 import time
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="Norm.AI - Topografía Integral", layout="wide")
-st.title("📐 Extractor de Poligonales Multi-página")
-st.markdown("Este módulo analiza todo el PDF automáticamente para encontrar la poligonal completa.")
+st.set_page_config(page_title="Norm.AI - Topografía Pro", layout="wide")
+st.title("📐 Extractor de Poligonales (Modo Ultra-Estable)")
 
 if "GOOGLE_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-    # Usamos Flash-Lite por su enorme ventana de contexto y eficiencia de cuota
+    # Usamos Flash-Lite por ser el más rápido y eficiente en cuotas
     model = genai.GenerativeModel('models/gemini-2.0-flash-lite')
 else:
-    st.error("Falta API Key en Secrets.")
+    st.error("Configura la API Key.")
     st.stop()
 
 # --- 2. LÓGICA DE DIBUJO ---
-def generar_dxf(datos):
+def generar_dxf(todos_los_tramos):
     doc = ezdxf.new('R2010')
     msp = doc.modelspace()
     puntos = [Vec2(0, 0)]
-    tramos = datos.get('tramos', [])
     
-    for tramo in tramos:
+    for tramo in todos_los_tramos:
         try:
             dist = float(tramo.get('distancia', 0))
-            # La IA nos da el ángulo calculado del rumbo
             ang = math.radians(float(tramo.get('angulo_deg', 0)))
             np = puntos[-1] + Vec2(math.cos(ang) * dist, math.sin(ang) * dist)
             
@@ -45,90 +42,87 @@ def generar_dxf(datos):
             puntos.append(np)
         except: continue
 
-    # Cuadro Técnico automático
-    x_tab = 20
-    msp.add_text("CUADRO DE RUMBOS Y DISTANCIAS", dxfattribs={'height': 0.8}).set_placement((x_tab, 5))
-    for i, t in enumerate(tramos):
+    # Cuadro de rumbos
+    x_t = 20
+    for i, t in enumerate(todos_los_tramos):
         txt = f"L{i+1}: {t.get('rumbo')} | {t.get('distancia')}m"
-        msp.add_text(txt, dxfattribs={'height': 0.4}).set_placement((x_tab, -(i * 0.7)))
+        msp.add_text(txt, dxfattribs={'height': 0.4}).set_placement((x_t, -(i * 0.7)))
 
-    path = os.path.join(tempfile.gettempdir(), f"poligonal_completa.dxf")
+    path = os.path.join(tempfile.gettempdir(), "poligonal_final.dxf")
     doc.saveas(path)
     return path
 
 # --- 3. INTERFAZ ---
-archivo_pdf = st.file_uploader("Sube el PDF completo de la escritura", type=["pdf"])
+archivo_pdf = st.file_uploader("Sube el PDF de la escritura", type=["pdf"])
 
 if archivo_pdf:
-    if st.button("🚀 Procesar Documento Completo"):
+    if st.button("🚀 Iniciar Procesamiento Inteligente"):
         try:
-            # Abrir PDF
             doc_pdf = fitz.open(stream=archivo_pdf.read(), filetype="pdf")
             num_pags = len(doc_pdf)
-            st.info(f"Procesando {num_pags} páginas...")
+            st.info(f"Analizando {num_pags} páginas una por una para evitar bloqueos de cuota...")
 
-            google_files = []
-            progress_bar = st.progress(0)
-
-            # 1. CONVERTIR CADA PÁGINA A IMAGEN OPTIMIZADA
-            # Usamos una resolución menor (1.2) para que quepan muchas páginas en la cuota
-            with st.spinner("Preparando páginas para la IA..."):
-                for i in range(num_pags):
-                    pagina = doc_pdf.load_page(i)
-                    pix = pagina.get_pixmap(matrix=fitz.Matrix(1.2, 1.2)) 
-                    img_path = os.path.join(tempfile.gettempdir(), f"pag_{i}.jpg")
-                    pix.save(img_path)
-                    
-                    # Subir a Google
-                    g_file = genai.upload_file(path=img_path)
-                    google_files.append(g_file)
-                    
-                    # Actualizar progreso
-                    progress_bar.progress((i + 1) / num_pags)
-                    os.remove(img_path)
-
-            # 2. ESPERAR A QUE TODOS ESTÉN "ACTIVE"
-            with st.spinner("Google está indexando las páginas..."):
-                for gf in google_files:
-                    while gf.state.name == "PROCESSING":
-                        time.sleep(1)
-                        gf = genai.get_file(gf.name)
-
-            # 3. PROMPT PARA ANÁLISIS GLOBAL
+            todos_los_tramos = []
+            progreso = st.progress(0)
+            
+            # PROMPT INDIVIDUAL
             prompt = """
-            Analiza TODAS las páginas proporcionadas. Contienen la descripción técnica de un terreno.
-            1. Busca la sección de 'Rumbos y Distancias'. 
-            2. Es probable que la lista comience en una página y continúe en las siguientes.
-            3. Extrae la secuencia COMPLETA sin saltarte tramos.
-            4. Devuelve UN SOLO JSON con todos los tramos combinados:
-            {"tramos": [{"rumbo": "N 10°E", "distancia": 25.0, "tipo": "linea", "angulo_deg": 45}]}
+            Analiza esta página de una escritura. Si contiene rumbos y distancias, extráelos.
+            Si no hay datos técnicos, devuelve un JSON vacío: {"tramos": []}
+            Si hay datos, usa este formato:
+            {"tramos": [{"rumbo": "N 10E", "distancia": 25.0, "tipo": "linea", "angulo_deg": 45}]}
             """
 
-            with st.spinner("La IA está leyendo y uniendo la poligonal..."):
-                # Enviamos la lista completa de archivos
-                response = model.generate_content([prompt] + google_files)
-                
-                match = re.search(r'\{.*\}', response.text, re.DOTALL)
-                if match:
-                    datos = json.loads(match.group())
-                    dxf_path = generar_dxf(datos)
+            # 4. PROCESAMIENTO PÁGINA POR PÁGINA
+            for i in range(num_pags):
+                with st.spinner(f"Procesando página {i+1} de {num_pags}..."):
+                    # Convertir página a imagen optimizada
+                    pagina = doc_pdf.load_page(i)
+                    pix = pagina.get_pixmap(matrix=fitz.Matrix(1.1, 1.1)) # Resolución ligera
+                    img_path = os.path.join(tempfile.gettempdir(), f"temp_p{i}.jpg")
+                    pix.save(img_path)
                     
-                    st.success(f"✅ Se detectaron {len(datos['tramos'])} tramos en todo el documento.")
-                    with open(dxf_path, "rb") as f:
-                        st.download_button("💾 Descargar Poligonal Completa (DXF)", f, 
-                                         file_name="poligonal_normai_completa.dxf")
-                    st.json(datos)
-                else:
-                    st.error("No se pudo extraer una estructura de rumbos válida de estas páginas.")
+                    # Subir y procesar individualmente (esto consume pocos tokens por vez)
+                    g_file = genai.upload_file(path=img_path)
+                    
+                    # Espera breve para asegurar que el archivo esté listo
+                    while g_file.state.name == "PROCESSING":
+                        time.sleep(1)
+                        g_file = genai.get_file(g_file.name)
+                    
+                    # Llamada a la IA para esta página específica
+                    response = model.generate_content([prompt, g_file])
+                    
+                    # Extraer JSON y acumular tramos
+                    match = re.search(r'\{.*\}', response.text, re.DOTALL)
+                    if match:
+                        try:
+                            datos_pag = json.loads(match.group())
+                            todos_los_tramos.extend(datos_pag.get('tramos', []))
+                        except: pass
+                    
+                    # Limpieza inmediata
+                    genai.delete_file(g_file.name)
+                    os.remove(img_path)
+                    
+                    # PEQUEÑA PAUSA de 2 segundos para no saturar el TPM de Google
+                    time.sleep(2)
+                    progreso.progress((i + 1) / num_pags)
 
-            # Limpieza en la nube
-            for gf in google_files:
-                genai.delete_file(gf.name)
+            # 5. RESULTADO FINAL
+            if todos_los_tramos:
+                st.success(f"✅ Se encontraron {len(todos_los_tramos)} tramos en total.")
+                ruta_dxf = generar_dxf(todos_los_tramos)
+                with open(ruta_dxf, "rb") as f:
+                    st.download_button("💾 Descargar Poligonal Completa (DXF)", f, file_name="poligonal_normai.dxf")
+                st.json(todos_los_tramos)
+            else:
+                st.warning("No se encontraron rumbos y distancias en ninguna página.")
 
         except google.api_core.exceptions.ResourceExhausted:
-            st.error("🛑 El documento es demasiado extenso para procesarlo en un solo minuto. Prueba separándolo en grupos de 10 páginas.")
+            st.error("🛑 Google sigue limitando la velocidad. Por favor, espera 1 minuto e intenta de nuevo.")
         except Exception as e:
-            st.error(f"Error crítico: {e}")
+            st.error(f"Error: {e}")
 
 st.divider()
 st.caption(f"Norm.AI | Miguel Guidos - Arquitectura & Tecnología | 2026")
