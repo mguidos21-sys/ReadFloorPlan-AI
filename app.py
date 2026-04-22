@@ -28,7 +28,6 @@ else:
 def sanitizar_texto(texto):
     if not texto: return "N/A"
     t = str(texto).replace('\n', ' ').strip()
-    # Limpieza correcta que preserva letras y números
     t = re.sub(r'[^\x20-\x7E\xA0-\xFF]', '', t) 
     return t
 
@@ -39,7 +38,16 @@ def limpiar_numero(valor):
 
 def interpretar_rumbo_sv(rumbo_str, ultimo_rad=0.0):
     if not rumbo_str or not isinstance(rumbo_str, str): return ultimo_rad
-    r = rumbo_str.upper().replace('OESTE', 'W').replace('PONIENTE', 'W').replace('ORIENTE', 'E').replace('ESTE', 'E')
+    r = rumbo_str.upper().strip()
+    
+    # EL ARREGLO: Soporte nativo para puntos cardinales puros (Sin grados)
+    if r in ['NORTE', 'N']: return math.pi / 2          # 90 grados hacia arriba
+    if r in ['SUR', 'S']: return 3 * math.pi / 2        # 270 grados hacia abajo
+    if r in ['ESTE', 'ORIENTE', 'E']: return 0.0        # 0 grados hacia la derecha
+    if r in ['OESTE', 'PONIENTE', 'W']: return math.pi  # 180 grados hacia la izquierda
+
+    # Si trae grados, aplicamos la fórmula normal
+    r = r.replace('OESTE', 'W').replace('PONIENTE', 'W').replace('ORIENTE', 'E').replace('ESTE', 'E')
     match = re.search(r'([NS])\s*(\d+)[°\s]*(\d+)[\'\s]*(\d+(?:\.\d+)?)?[\"”\s]*([EW])', r)
     if match:
         ns, g, m, s, ew = match.groups()
@@ -52,7 +60,7 @@ def interpretar_rumbo_sv(rumbo_str, ultimo_rad=0.0):
         return math.radians(ang)
     return ultimo_rad
 
-# --- 3. GENERADOR DE DXF (SECCIONADO Y EN ESPAÑOL) ---
+# --- 3. GENERADOR DE DXF ---
 def crear_dxf_integral(datos):
     doc = ezdxf.new('R2010') 
     doc.header['$INSUNITS'] = 6 # Metros
@@ -82,7 +90,7 @@ def crear_dxf_integral(datos):
     if len(puntos_dwg) > 2:
         msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1})
 
-    # --- FICHA TÉCNICA SECCIONADA (SIDEBAR) ---
+    # --- FICHA TÉCNICA (SIDEBAR) ---
     max_x = max([p[0] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     max_y = max([p[1] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     x_side = max_x + 15
@@ -112,19 +120,29 @@ def crear_dxf_integral(datos):
     queb = str(datos.get('quebradas', 'No menciona'))
     msp.add_text(f"CUERPOS DE AGUA: {sanitizar_texto(queb)}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
 
+    # EL ARREGLO DE LA TABLA: Columnas alineadas mediante coordenadas fijas
     y_ref -= 8
     msp.add_text("CUADRO DE RUMBOS Y DISTANCIAS", dxfattribs={'height': 1.0, 'color': 4}).set_placement((x_side, y_ref))
+    y_ref -= 2.0
+    
+    # Encabezados en columnas
+    msp.add_text("Linea", dxfattribs={'height': 0.6, 'color': 7}).set_placement((x_side + 2, y_ref))
+    msp.add_text("Rumbo", dxfattribs={'height': 0.6, 'color': 7}).set_placement((x_side + 10, y_ref))
+    msp.add_text("Distancia", dxfattribs={'height': 0.6, 'color': 7}).set_placement((x_side + 35, y_ref))
     y_ref -= 1.5
-    msp.add_text("Vertice   Rumbo                    Distancia", dxfattribs={'height': 0.6, 'color': 7}).set_placement((x_side + 2, y_ref))
-    y_ref -= 1.5
+
     for i, t in enumerate(tramos):
         if not isinstance(t, dict): continue
         d_val = limpiar_numero(t.get('distancia'))
         r_val = sanitizar_texto(t.get('rumbo', ''))
-        msp.add_text(f"L{i+1}       {r_val.ljust(25)} {d_val:.2f} m", dxfattribs={'height': 0.45}).set_placement((x_side + 2, y_ref))
+        
+        # Datos en columnas
+        msp.add_text(f"L{i+1}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
+        msp.add_text(r_val, dxfattribs={'height': 0.5}).set_placement((x_side + 10, y_ref))
+        msp.add_text(f"{d_val:.2f} m", dxfattribs={'height': 0.5}).set_placement((x_side + 35, y_ref))
         y_ref -= 1.3
 
-    temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Esp_{int(time.time())}.dxf")
+    temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Final_{int(time.time())}.dxf")
     doc.saveas(temp_path)
     return temp_path
 
@@ -132,7 +150,7 @@ def crear_dxf_integral(datos):
 archivo = st.file_uploader("Sube la Escritura (PDF)", type=["pdf"])
 
 if archivo:
-    if st.button("🚀 Generar Plano en Español"):
+    if st.button("🚀 Generar Plano Correcto"):
         try:
             status = st.status("Analizando expediente técnico...", expanded=True)
             doc_pdf = fitz.open(stream=archivo.read(), filetype="pdf")
@@ -149,13 +167,12 @@ if archivo:
             while any(f.state.name == "PROCESSING" for f in google_files):
                 time.sleep(1); google_files = [genai.get_file(f.name) for f in google_files]
 
-            # EL ARREGLO ESTÁ AQUÍ: Un formato estricto que obliga a la IA a llenar los tramos
             prompt = """
-            Analiza esta escritura y extrae la información en ESPAÑOL para el expediente:
+            Analiza esta escritura y extrae la información en ESPAÑOL:
             1. 'propietario': Nombre completo del titular.
             2. 'colindantes': Lista de vecinos por punto cardinal.
-            3. 'servidumbres' y 'quebradas': Menciona cualquier restricción hídrica o de paso.
-            4. 'tramos': Lista OBLIGATORIA de objetos con 'rumbo' (texto) y 'distancia' (solo número).
+            3. 'servidumbres' y 'quebradas'.
+            4. 'tramos': Lista OBLIGATORIA con 'rumbo' (texto literal de la escritura) y 'distancia' (solo número).
             
             Formato JSON ESTRICTO:
             {
@@ -163,7 +180,7 @@ if archivo:
               "colindantes": ["Norte: ...", "Sur: ..."],
               "servidumbres": "...",
               "quebradas": "...",
-              "tramos": [{"rumbo": "N 10° 15' 20\" E", "distancia": 15.50}]
+              "tramos": [{"rumbo": "Norte", "distancia": 15.50}]
             }
             """
             
