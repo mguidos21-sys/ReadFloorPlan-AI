@@ -1,7 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
 import ezdxf
-from ezdxf.math import Vec2  # <-- ¡Esta es la pieza que faltaba!
 import fitz  # PyMuPDF
 from PIL import Image
 import json
@@ -12,8 +11,8 @@ import tempfile
 import time
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="Norm.AI - Topografía El Salvador", layout="wide")
-st.title("📐 Norm.AI: Generador de Poligonales y Cuadros Técnicos")
+st.set_page_config(page_title="Norm.AI - Topografía Profesional", layout="wide")
+st.title("📐 Generador de Poligonales")
 
 MODELO_ACTIVO = 'gemini-2.5-flash'
 
@@ -39,7 +38,6 @@ def interpretar_rumbo_profesional(rumbo_str, ultimo_rad=0.0):
     if not rumbo_str or not isinstance(rumbo_str, str): return ultimo_rad
     r = rumbo_str.upper().replace('OESTE', 'W').replace('PONIENTE', 'W').replace('ORIENTE', 'E').replace('ESTE', 'E')
     
-    # Regex para capturar grados, minutos y segundos con cualquier símbolo
     match = re.search(r'([NS])\s*(\d+)[°\s]*(\d+)[\'\s]*(\d+(?:\.\d+)?)?[\"”\s]*([EW])', r)
     if match:
         ns, g, m, s, ew = match.groups()
@@ -52,17 +50,15 @@ def interpretar_rumbo_profesional(rumbo_str, ultimo_rad=0.0):
         return math.radians(ang)
     return ultimo_rad
 
-# --- 3. GENERADOR DE DXF (TABLA Y GEOMETRÍA) ---
+# --- 3. GENERADOR DE DXF (CERO CORRUPCIÓN) ---
 def crear_dxf_profesional(datos):
-    doc = ezdxf.new('R2000')
+    doc = ezdxf.new('R2010') # Formato universal
     doc.header['$INSUNITS'] = 6 # Metros
-    doc.layers.add('LINDEROS', color=7)
-    doc.layers.add('CUADRO_TECNICO', color=2)
     msp = doc.modelspace()
     
     # --- DIBUJO DE POLIGONAL ---
-    current_pos = Vec2(0, 0)
-    puntos_dwg = [current_pos]
+    current_x, current_y = 0.0, 0.0
+    puntos_dwg = [(current_x, current_y)]
     ultimo_rad = 0.0
     
     tramos = datos.get('tramos', [])
@@ -72,40 +68,40 @@ def crear_dxf_profesional(datos):
         rad = interpretar_rumbo_profesional(rumbo_txt, ultimo_rad)
         
         if dist > 0:
-            next_pos = current_pos + Vec2(math.cos(rad) * dist, math.sin(rad) * dist)
-            msp.add_line(current_pos, next_pos, dxfattribs={'layer': 'LINDEROS'})
-            current_pos = next_pos
-            puntos_dwg.append(current_pos)
+            next_x = round(current_x + math.cos(rad) * dist, 4)
+            next_y = round(current_y + math.sin(rad) * dist, 4)
+            
+            # Dibujamos línea sólida básica (color 7 = blanco/negro por defecto)
+            msp.add_line((current_x, current_y), (next_x, next_y), dxfattribs={'color': 7})
+            
+            current_x, current_y = next_x, next_y
+            puntos_dwg.append((current_x, current_y))
             ultimo_rad = rad
 
-    # Cierre de polígono
+    # Cierre de polígono (SOLO COLOR, NADA DE 'DASHED')
     if len(puntos_dwg) > 2:
-        msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1, 'linetype': 'DASHED'})
+        msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1}) # 1 = Rojo
 
-    # --- DIBUJO DE CUADRO TÉCNICO (TABLA REAL) ---
-    x_tab = max([p.x for p in puntos_dwg]) + 15 if len(puntos_dwg) > 1 else 25
-    y_tab = max([p.y for p in puntos_dwg]) if len(puntos_dwg) > 1 else 25
+    # --- DIBUJO DE CUADRO TÉCNICO ---
+    x_tab = max([p[0] for p in puntos_dwg]) + 15 if len(puntos_dwg) > 1 else 25
+    y_tab = max([p[1] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 25
     
-    # Encabezados de Tabla
-    headers = ["TRAMO", "RUMBO", "DISTANCIA (m)"]
+    headers = ["TRAMO", "RUMBO", "DIST (m)"]
     col_widths = [10, 25, 15]
     
-    # Dibujar líneas de encabezado
     for i, h in enumerate(headers):
-        msp.add_text(h, dxfattribs={'height': 0.8, 'layer': 'CUADRO_TECNICO'}).set_placement((x_tab + sum(col_widths[:i]), y_tab))
+        msp.add_text(h, dxfattribs={'height': 0.8, 'color': 2}).set_placement((x_tab + sum(col_widths[:i]), y_tab))
     
     y_tab -= 2
     for i, t in enumerate(tramos):
-        # Fila de datos
         msp.add_text(f"L{i+1}", dxfattribs={'height': 0.6}).set_placement((x_tab, y_tab))
         msp.add_text(sanitizar_texto(t.get('rumbo')), dxfattribs={'height': 0.6}).set_placement((x_tab + col_widths[0], y_tab))
         msp.add_text(f"{limpiar_numero(t.get('distancia')):.2f}", dxfattribs={'height': 0.6}).set_placement((x_tab + col_widths[0] + col_widths[1], y_tab))
         y_tab -= 1.5
 
-    # Información Legal Inferior
-    y_tab -= 5
+    y_tab -= 4
     msp.add_text(f"PROPIETARIO: {sanitizar_texto(datos.get('propietario'))}", dxfattribs={'height': 1.0, 'color': 3}).set_placement((x_tab, y_tab))
-    y_tab -= 3
+    y_tab -= 2
     msp.add_text(f"NOTAS: {sanitizar_texto(datos.get('servidumbres'))}", dxfattribs={'height': 0.5}).set_placement((x_tab, y_tab))
 
     temp = os.path.join(tempfile.gettempdir(), f"NormAI_{int(time.time())}.dxf")
@@ -116,7 +112,7 @@ def crear_dxf_profesional(datos):
 archivo = st.file_uploader("Sube la Escritura (PDF)", type=["pdf"])
 
 if archivo:
-    if st.button("🚀 Generar Poligonal y Cuadro Detallado"):
+    if st.button("🚀 Generar Poligonal"):
         try:
             status = st.status("Analizando folios...", expanded=True)
             doc_pdf = fitz.open(stream=archivo.read(), filetype="pdf")
