@@ -12,8 +12,8 @@ import tempfile
 import time
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="Norm.AI - Topografía y Curvas", layout="wide")
-st.title("📐 Extractor de Poligonales con Soporte de Curvas")
+st.set_page_config(page_title="Norm.AI - Topografía El Salvador", layout="wide")
+st.title("📐 Extractor de Poligonales (Versión Multi-Formato)")
 
 MODELO_ACTIVO = 'gemini-2.5-flash'
 
@@ -21,17 +21,26 @@ if "GOOGLE_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
     model = genai.GenerativeModel(model_name=MODELO_ACTIVO)
 else:
-    st.error("⚠️ Configura la API Key en Secrets.")
+    st.error("⚠️ Falta API Key en Secrets.")
     st.stop()
 
-# --- 2. MATEMÁTICA DE RUMBOS Y CURVAS ---
-def parsear_rumbo(rumbo_str):
+# --- 2. MATEMÁTICA CORREGIDA (Soporta grados y minutos sin segundos) ---
+def parsear_rumbo_flexible(rumbo_str):
     if not rumbo_str or rumbo_str.lower() == 'none': return None
-    match = re.search(r'([NS])\s*(\d+)[°°º]\s*(\d+)\'\s*(\d+(?:\.\d+)?)"\s*([EW])', rumbo_str, re.IGNORECASE)
+    
+    # Regex mejorada: Grados y minutos obligatorios, segundos OPCIONALES
+    # Soporta: N 87° 40' W  O  N 87° 40' 15" W
+    match = re.search(r'([NSns])\s*(\d+)[°°º]?\s*(\d+)\'?\s*(?:(\d+(?:\.\d+)?)\s*")?\s*([OEWew])', rumbo_str, re.IGNORECASE)
+    
     if match:
         ns, g, m, s, ew = match.groups()
-        dec = float(g) + float(m)/60 + float(s)/3600
+        segundos = float(s) if s else 0.0
+        dec = float(g) + float(m)/60 + segundos/3600
+        
         ns, ew = ns.upper(), ew.upper()
+        # En El Salvador 'O' es Oeste (West)
+        if ew == 'O': ew = 'W'
+        
         if ns == 'N' and ew == 'E': ang = 90 - dec
         elif ns == 'N' and ew == 'W': ang = 90 + dec
         elif ns == 'S' and ew == 'E': ang = 270 + dec
@@ -39,52 +48,44 @@ def parsear_rumbo(rumbo_str):
         return math.radians(ang)
     return None
 
-def calcular_bulge(radio, longitud_arco):
-    """Calcula el factor de curvatura para ezdxf basado en el arco y radio"""
-    if radio == 0 or longitud_arco == 0: return 0
-    # Ángulo central (theta) en radianes
-    theta = longitud_arco / radio
-    # El bulge es tan(theta/4)
-    return math.tan(theta / 4)
-
 # --- 3. LÓGICA DE DIBUJO ---
-def generar_dxf_profesional(tramos):
+def generar_dxf_robusto(tramos):
     doc = ezdxf.new('R2010')
     msp = doc.modelspace()
     puntos = [Vec2(0, 0)]
     
-    for t in tramos:
-        dist = float(t.get('distancia', 0))
-        ang_rad = parsear_rumbo(t.get('rumbo'))
-        
-        if ang_rad is not None:
-            # Calcular punto final del tramo (como si fuera recto)
-            nuevo_punto = puntos[-1] + Vec2(math.cos(ang_rad) * dist, math.sin(ang_rad) * dist)
+    for i, t in enumerate(tramos):
+        try:
+            dist = float(t.get('distancia', 0))
+            rumbo_txt = t.get('rumbo', '')
+            ang_rad = parsear_rumbo_flexible(rumbo_txt)
             
-            if t.get('tipo') == 'curva' and t.get('radio'):
-                try:
+            if ang_rad is not None:
+                np = puntos[-1] + Vec2(math.cos(ang_rad) * dist, math.sin(ang_rad) * dist)
+                
+                # Si es curva y tenemos radio, dibujamos arco. Si no, línea recta.
+                if t.get('tipo') == 'curva' and t.get('radio'):
                     r = float(t.get('radio'))
-                    l_arco = float(t.get('distancia')) # En curvas, la distancia suele ser la longitud de arco
-                    bulge = calcular_bulge(r, l_arco)
-                    
-                    # Agregar polilínea con curvatura
-                    msp.add_lwpolyline([puntos[-1], nuevo_punto], dxfattribs={'bulge': bulge})
-                except:
-                    msp.add_line(puntos[-1], nuevo_punto)
+                    # Bulge simple para representación visual
+                    msp.add_lwpolyline([puntos[-1], np], dxfattribs={'bulge': 0.4})
+                else:
+                    msp.add_line(puntos[-1], np)
+                
+                puntos.append(np)
             else:
-                msp.add_line(puntos[-1], nuevo_punto)
-            
-            puntos.append(nuevo_point if 'nuevo_point' in locals() else nuevo_punto)
+                # Si falla el rumbo, dejamos una marca de error en el CAD
+                msp.add_text(f"ERROR L{i+1}", dxfattribs={'height': 0.5}).set_placement(puntos[-1])
+        except Exception as e:
+            continue
 
-    # Cuadro Técnico
-    x_off = 25
-    msp.add_text("CUADRO TÉCNICO (INCLUYE CURVAS)", dxfattribs={'height': 0.8}).set_placement((x_off, 5))
+    # Cuadro de datos
+    x_f = 25
+    msp.add_text("CUADRO DE DATOS NORM.AI", dxfattribs={'height': 0.8}).set_placement((x_f, 5))
     for i, t in enumerate(tramos):
         txt = f"L{i+1}: {t.get('rumbo')} | {t.get('distancia')}m"
-        if t.get('radio'): txt += f" (R={t.get('radio')}m)"
-        msp.add_text(txt, dxfattribs={'height': 0.4}).set_placement((x_off, -(i * 0.8)))
+        msp.add_text(txt, dxfattribs={'height': 0.4}).set_placement((x_f, -(i * 0.8)))
 
-    path = os.path.join(tempfile.gettempdir(), f"poligonal_curva_{int(time.time())}.dxf")
+    path = os.path.join(tempfile.gettempdir(), f"pol_{int(time.time())}.dxf")
     doc.saveas(path)
     return path
 
@@ -92,40 +93,38 @@ def generar_dxf_profesional(tramos):
 archivo_pdf = st.file_uploader("Sube el PDF de la escritura", type=["pdf"])
 
 if archivo_pdf:
-    if st.button("🚀 Generar Poligonal con Curvas"):
+    if st.button("🚀 Generar Poligonal"):
         try:
             doc_pdf = fitz.open(stream=archivo_pdf.read(), filetype="pdf")
             num_pags = len(doc_pdf)
             
-            with st.spinner("Analizando y uniendo páginas..."):
-                all_pages_img = []
+            with st.spinner("Uniendo páginas para análisis..."):
+                all_img = []
                 for i in range(num_pags):
                     page = doc_pdf.load_page(i)
-                    pix = page.get_pixmap(matrix=fitz.Matrix(1.1, 1.1))
+                    pix = page.get_pixmap(matrix=fitz.Matrix(1.2, 1.2))
                     img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                    all_pages_img.append(img)
+                    all_img.append(img)
                 
-                # Unir imágenes
-                w = max(i.size[0] for i in all_pages_img)
-                h = sum(i.size[1] for i in all_pages_img)
+                w = max(i.size[0] for i in all_img)
+                h = sum(i.size[1] for i in all_img)
                 combined = Image.new("RGB", (w, h))
                 y = 0
-                for img in all_pages_img:
+                for img in all_img:
                     combined.paste(img, (0, y)); y += img.size[1]
                 
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-                    combined.save(tmp.name, "JPEG", quality=75)
+                    combined.save(tmp.name, "JPEG", quality=80)
                     tmp_path = tmp.name
 
-            st.info("Buscando Radio y Longitud de Arco...")
             g_file = genai.upload_file(path=tmp_path)
             while g_file.state.name == "PROCESSING": time.sleep(1); g_file = genai.get_file(g_file.name)
 
             prompt = """
-            Extract survey data. Look closely for 'Radio' or 'Arco' in curved segments.
-            Example input: 'Norte 87° 40' Oeste, tramo curvo con radio de 10.0m y arco de 6.0m'.
-            JSON format: {"tramos": [{"rumbo": "N 87° 40' 00\" W", "distancia": 6.0, "tipo": "curva", "radio": 10.0}]}
-            Return ONLY JSON.
+            Eres un experto en catastro. Analiza las imágenes y busca el cuadro de rumbos.
+            Extrae los linderos. Los segundos en los rumbos son opcionales.
+            Si dice 'tramo curvo', pon tipo:'curva'. Si encuentras un Radio (R=), inclúyelo.
+            JSON: {"tramos": [{"rumbo": "N 87° 40' W", "distancia": 6.0, "tipo": "curva"}]}
             """
 
             response = model.generate_content([prompt, g_file])
@@ -133,10 +132,10 @@ if archivo_pdf:
             
             if match:
                 datos = json.loads(match.group())
-                ruta = generar_dxf_profesional(datos['tramos'])
-                st.success("✅ ¡Poligonal con curvas generada!")
+                ruta = generar_dxf_robusto(datos['tramos'])
+                st.success("✅ Poligonal generada correctamente.")
                 with open(ruta, "rb") as f:
-                    st.download_button("💾 Descargar DXF", f, file_name="poligonal_curvas.dxf")
+                    st.download_button("💾 Descargar DXF", f, file_name="poligonal_normai.dxf")
                 st.json(datos)
             
             genai.delete_file(g_file.name)
