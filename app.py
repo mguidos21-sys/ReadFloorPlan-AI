@@ -13,7 +13,7 @@ import time
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Norm.AI - Topografía Pro", layout="wide")
-st.title("📐 Extractor de Poligonales (Modo Resiliente)")
+st.title("📐 Extractor de Poligonales ")
 
 if "GOOGLE_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
