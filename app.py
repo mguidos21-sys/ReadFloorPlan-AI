@@ -14,7 +14,7 @@ import time
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Norm.AI - Topografía Integral", layout="wide")
-st.title("📐 Extractor de Poligonales Completas (9 Páginas)")
+st.title("📐 Extractor de Poligonales Completas")
 st.markdown("Este módulo une todo el documento para generar la poligonal cerrada.")
 
 if "GOOGLE_API_KEY" in st.secrets:
