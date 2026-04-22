@@ -1,6 +1,7 @@
 import streamlit as st
 import google.generativeai as genai
 import ezdxf
+from ezdxf.math import Vec2  # <-- ¡Esta es la pieza que faltaba!
 import fitz  # PyMuPDF
 from PIL import Image
 import json
@@ -12,7 +13,7 @@ import time
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Norm.AI - Topografía El Salvador", layout="wide")
-st.title("📐 Generador de Poligonales y Cuadros Técnicos")
+st.title("📐 Norm.AI: Generador de Poligonales y Cuadros Técnicos")
 
 MODELO_ACTIVO = 'gemini-2.5-flash'
 
@@ -115,7 +116,7 @@ def crear_dxf_profesional(datos):
 archivo = st.file_uploader("Sube la Escritura (PDF)", type=["pdf"])
 
 if archivo:
-    if st.button("🚀 Generando"):
+    if st.button("🚀 Generar Poligonal y Cuadro Detallado"):
         try:
             status = st.status("Analizando folios...", expanded=True)
             doc_pdf = fitz.open(stream=archivo.read(), filetype="pdf")
