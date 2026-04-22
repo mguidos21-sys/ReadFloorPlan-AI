@@ -13,7 +13,7 @@ import time
 
 # --- 1. CONFIGURACIÓN DEL MODELO ---
 st.set_page_config(page_title="Norm.AI - Topografía Profesional", layout="wide")
-st.title("📐 Extractor de Poligonales (Versión DXF R2018)")
+st.title("📐 Extractor de Poligonales ")
 
 # Usamos el modelo que confirmamos que tienes activo
 MODELO_ACTIVO = 'gemini-2.5-flash'
