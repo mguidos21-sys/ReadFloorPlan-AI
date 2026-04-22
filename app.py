@@ -13,7 +13,7 @@ import time
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Norm.AI - Topografía Real", layout="wide")
-st.title("📐 Norm.AI: Generador de Poligonales y Expedientes")
+st.title("📐 Generador de Poligonales")
 
 MODELO_ACTIVO = 'gemini-2.5-flash'
 
