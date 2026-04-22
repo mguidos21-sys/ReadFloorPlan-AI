@@ -4,6 +4,7 @@ import google.api_core.exceptions
 import ezdxf
 from ezdxf.math import Vec2
 import fitz  # PyMuPDF
+from PIL import Image
 import json
 import re
 import math
@@ -12,13 +13,14 @@ import tempfile
 import time
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="Norm.AI - Topografía Pro", layout="wide")
-st.title("📐 Extractor de Poligonales ")
+st.set_page_config(page_title="Norm.AI - Topografía Resiliente", layout="wide")
+st.title("📐 Extractor de Poligonales (Optimización Extrema de Cuota)")
 
 if "GOOGLE_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-    # Usamos Flash-Lite: es el que tiene los límites de tokens más generosos por minuto
-    model = genai.GenerativeModel('models/gemini-2.0-flash-lite')
+    # Usamos gemini-1.5-flash porque en Tier 1 de pago suele tener 
+    # límites de RPM/TPM más estables que la versión 2.0 lite.
+    model = genai.GenerativeModel('models/gemini-1.5-flash')
 else:
     st.error("Configura la API Key en los Secrets.")
     st.stop()
@@ -45,70 +47,77 @@ def generar_dxf(tramos):
     return path
 
 # --- 3. INTERFAZ ---
-archivo_pdf = st.file_uploader("Sube el PDF de la escritura (9+ páginas)", type=["pdf"])
+archivo_pdf = st.file_uploader("Sube el PDF de la escritura", type=["pdf"])
 
 if archivo_pdf:
-    if st.button("🚀 Iniciar Procesamiento por Lotes"):
+    if st.button("🚀 Iniciar Procesamiento (Modo Ahorro de Tokens)"):
         try:
             doc_pdf = fitz.open(stream=archivo_pdf.read(), filetype="pdf")
             num_pags = len(doc_pdf)
-            st.info(f"Analizando {num_pags} páginas con gestión de cuota activa...")
+            
+            # ESPERA INICIAL para limpiar cualquier cuota residual
+            st.info("Esperando 10 segundos para resetear límites de Google...")
+            time.sleep(10)
 
             todos_los_tramos = []
             bar = st.progress(0)
 
             for i in range(num_pags):
-                with st.spinner(f"Procesando página {i+1}..."):
+                with st.spinner(f"Analizando página {i+1}..."):
                     pagina = doc_pdf.load_page(i)
                     
-                    # ESTRATEGIA 1: Intentar extraer texto primero (Ahorra 99% de cuota)
-                    texto_pag = pagina.get_text().strip()
+                    # RENDERIZADO DE PÁGINA
+                    pix = pagina.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+                    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
                     
-                    content_to_send = []
-                    if len(texto_pag) > 100: # Si hay texto real suficiente
-                        content_to_send.append(f"PÁGINA {i+1} (TEXTO):\n{texto_pag}")
-                    else:
-                        # ESTRATEGIA 2: Si es escaneo, enviar imagen OPTIMIZADA (pequeña)
-                        pix = pagina.get_pixmap(matrix=fitz.Matrix(1.0, 1.0)) # 1.0 es el mínimo legible
-                        img_path = os.path.join(tempfile.gettempdir(), f"p{i}.jpg")
-                        pix.save(img_path)
-                        g_file = genai.upload_file(path=img_path)
-                        while g_file.state.name == "PROCESSING":
-                            time.sleep(1)
-                            g_file = genai.get_file(g_file.name)
-                        content_to_send.append(g_file)
+                    # COMPRESIÓN EXTREMA: Forzamos máximo 1000px de ancho
+                    # Esto reduce los tokens de visión drásticamente
+                    img.thumbnail((1000, 1000)) 
                     
-                    # PROMPT TÉCNICO
-                    prompt = "Extract survey data (bearings/distances). If no technical data found, return empty JSON: {'tramos': []}. Else: {'tramos': [{'rumbo': 'N 10E', 'distancia': 25.0, 'tipo': 'linea', 'angulo_deg': 45}]}"
+                    img_path = os.path.join(tempfile.gettempdir(), f"p{i}.jpg")
+                    img.save(img_path, "JPEG", quality=70) # Calidad 70 es suficiente
+
+                    # SUBIR Y PROCESAR
+                    g_file = genai.upload_file(path=img_path)
+                    while g_file.state.name == "PROCESSING":
+                        time.sleep(1)
+                        g_file = genai.get_file(gf.name)
+
+                    prompt = "Extract survey data (bearings/distances). Output ONLY JSON: {'tramos': [{'rumbo': 'N10E', 'distancia': 25.0, 'tipo': 'linea', 'angulo_deg': 45}]}"
                     
                     try:
-                        response = model.generate_content([prompt] + content_to_send)
+                        response = model.generate_content([prompt, g_file])
                         match = re.search(r'\{.*\}', response.text, re.DOTALL)
                         if match:
                             datos = json.loads(match.group())
                             todos_los_tramos.extend(datos.get('tramos', []))
                     except google.api_core.exceptions.ResourceExhausted:
-                        st.warning(f"⚠️ Cuota saturada en pág {i+1}. Esperando 30 segundos...")
-                        time.sleep(30)
-                        # Reintento único
-                        response = model.generate_content([prompt] + content_to_send)
-                        # ... lógica de match similar ...
-                    
-                    # Limpieza y PAUSA DE SEGURIDAD
-                    if 'g_file' in locals():
-                        genai.delete_file(g_file.name)
+                        # Si falla por cuota, esperamos un ciclo completo de 60 segundos
+                        st.warning(f"⚠️ Cuota agotada en pág {i+1}. Esperando 60 segundos para liberar el minuto de Google...")
+                        time.sleep(60)
+                        # Reintento tras la espera larga
+                        response = model.generate_content([prompt, g_file])
+                        match = re.search(r'\{.*\}', response.text, re.DOTALL)
+                        if match:
+                            datos = json.loads(match.group())
+                            todos_los_tramos.extend(datos.get('tramos', []))
+
+                    # Limpieza y PAUSA PREVENTIVA
+                    genai.delete_file(g_file.name)
+                    os.remove(img_path)
                     
                     bar.progress((i + 1) / num_pags)
-                    time.sleep(3) # Pausa obligatoria entre páginas para no "llenar el vaso"
+                    # Pausa obligatoria de 5 segundos entre cada página para no saturar
+                    time.sleep(5)
 
             if todos_los_tramos:
-                st.success(f"✅ Poligonal de {len(todos_los_tramos)} tramos extraída.")
+                st.success(f"✅ Se extrajeron {len(todos_los_tramos)} tramos.")
                 dxf_path = generar_dxf(todos_los_tramos)
                 with open(dxf_path, "rb") as f:
-                    st.download_button("💾 Descargar DXF", f, file_name="poligonal_final.dxf")
+                    st.download_button("💾 Descargar DXF", f, file_name="poligonal_normai.dxf")
                 st.json(todos_los_tramos)
             else:
-                st.warning("No se detectaron datos técnicos. Asegúrate de que los rumbos sean legibles.")
+                st.warning("No se encontraron datos técnicos en el documento.")
 
         except Exception as e:
             st.error(f"Error crítico: {e}")
