@@ -28,7 +28,8 @@ else:
 def sanitizar_texto(texto):
     if not texto: return "N/A"
     t = str(texto).replace('\n', ' ').strip()
-    return re.search(r'[^\x20-\x7E\xA0-\xFF]', t) # Limpieza básica de caracteres
+    # Limpieza correcta que preserva letras y números
+    t = re.sub(r'[^\x20-\x7E\xA0-\xFF]', '', t) 
     return t
 
 def limpiar_numero(valor):
@@ -72,7 +73,6 @@ def crear_dxf_integral(datos):
         if dist > 0:
             next_x = round(current_x + math.cos(rad) * dist, 4)
             next_y = round(current_y + math.sin(rad) * dist, 4)
-            # Línea de lindero estándar
             color_linea = 3 if "ARCO" in rumbo_txt.upper() else 7
             msp.add_line((current_x, current_y), (next_x, next_y), dxfattribs={'color': color_linea})
             current_x, current_y = next_x, next_y
@@ -80,7 +80,7 @@ def crear_dxf_integral(datos):
             ultimo_rad = rad
 
     if len(puntos_dwg) > 2:
-        msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1}) # Cierre en Rojo
+        msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1})
 
     # --- FICHA TÉCNICA SECCIONADA (SIDEBAR) ---
     max_x = max([p[0] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
@@ -88,44 +88,39 @@ def crear_dxf_integral(datos):
     x_side = max_x + 15
     y_ref = max_y if max_y > 30 else 30
     
-    # SECCIÓN 1: ENCABEZADO
-    msp.add_text("FICHA TÉCNICA - NORM.AI", dxfattribs={'height': 1.5, 'color': 2}).set_placement((x_side, y_ref))
+    msp.add_text("FICHA TECNICA - NORM.AI", dxfattribs={'height': 1.5, 'color': 2}).set_placement((x_side, y_ref))
     y_ref -= 5
     
-    # SECCIÓN 2: DATOS LEGALES
     msp.add_text("DATOS GENERALES:", dxfattribs={'height': 1.0, 'color': 1}).set_placement((x_side, y_ref))
     y_ref -= 2.5
     propietario = str(datos.get('propietario', 'No detectado'))
-    msp.add_text(f"PROPIETARIO: {propietario}", dxfattribs={'height': 0.7}).set_placement((x_side + 2, y_ref))
+    msp.add_text(f"PROPIETARIO: {sanitizar_texto(propietario)}", dxfattribs={'height': 0.7}).set_placement((x_side + 2, y_ref))
     
     y_ref -= 5
     msp.add_text("COLINDANTES:", dxfattribs={'height': 1.0, 'color': 1}).set_placement((x_side, y_ref))
     colindantes = datos.get('colindantes', [])
     for col in colindantes:
         y_ref -= 1.8
-        msp.add_text(f"- {str(col)}", dxfattribs={'height': 0.6}).set_placement((x_side + 2, y_ref))
+        msp.add_text(f"- {sanitizar_texto(col)}", dxfattribs={'height': 0.6}).set_placement((x_side + 2, y_ref))
     
-    # SECCIÓN 3: NOTAS TÉCNICAS
     y_ref -= 6
     msp.add_text("NOTAS Y RESTRICCIONES:", dxfattribs={'height': 1.0, 'color': 3}).set_placement((x_side, y_ref))
     y_ref -= 2.5
     serv = str(datos.get('servidumbres', 'Ninguna mencionada'))
-    msp.add_text(f"SERVIDUMBRES: {serv}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
+    msp.add_text(f"SERVIDUMBRES: {sanitizar_texto(serv)}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
     y_ref -= 1.5
     queb = str(datos.get('quebradas', 'No menciona'))
-    msp.add_text(f"CUERPOS DE AGUA: {queb}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
+    msp.add_text(f"CUERPOS DE AGUA: {sanitizar_texto(queb)}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
 
-    # SECCIÓN 4: CUADRO DE RUMBOS
     y_ref -= 8
     msp.add_text("CUADRO DE RUMBOS Y DISTANCIAS", dxfattribs={'height': 1.0, 'color': 4}).set_placement((x_side, y_ref))
-    y_ref -= 1.0
-    # Encabezado de tabla
-    msp.add_text("Vértice   Rumbo                    Distancia", dxfattribs={'height': 0.6, 'color': 7}).set_placement((x_side + 2, y_ref))
+    y_ref -= 1.5
+    msp.add_text("Vertice   Rumbo                    Distancia", dxfattribs={'height': 0.6, 'color': 7}).set_placement((x_side + 2, y_ref))
     y_ref -= 1.5
     for i, t in enumerate(tramos):
         if not isinstance(t, dict): continue
         d_val = limpiar_numero(t.get('distancia'))
-        r_val = str(t.get('rumbo', ''))
+        r_val = sanitizar_texto(t.get('rumbo', ''))
         msp.add_text(f"L{i+1}       {r_val.ljust(25)} {d_val:.2f} m", dxfattribs={'height': 0.45}).set_placement((x_side + 2, y_ref))
         y_ref -= 1.3
 
@@ -134,7 +129,7 @@ def crear_dxf_integral(datos):
     return temp_path
 
 # --- 4. INTERFAZ ---
-archivo = st.file_uploader("Sube la Escritura (9 páginas)", type=["pdf"])
+archivo = st.file_uploader("Sube la Escritura (PDF)", type=["pdf"])
 
 if archivo:
     if st.button("🚀 Generar Plano en Español"):
@@ -154,15 +149,22 @@ if archivo:
             while any(f.state.name == "PROCESSING" for f in google_files):
                 time.sleep(1); google_files = [genai.get_file(f.name) for f in google_files]
 
+            # EL ARREGLO ESTÁ AQUÍ: Un formato estricto que obliga a la IA a llenar los tramos
             prompt = """
             Analiza esta escritura y extrae la información en ESPAÑOL para el expediente:
             1. 'propietario': Nombre completo del titular.
             2. 'colindantes': Lista de vecinos por punto cardinal.
             3. 'servidumbres' y 'quebradas': Menciona cualquier restricción hídrica o de paso.
-            4. 'tramos': Lista de objetos con 'rumbo' (N 00°00'00" E) y 'distancia' (solo número).
+            4. 'tramos': Lista OBLIGATORIA de objetos con 'rumbo' (texto) y 'distancia' (solo número).
             
-            Formato JSON:
-            {"propietario": "...", "colindantes": ["Norte: ...", "Sur: ..."], "servidumbres": "...", "quebradas": "...", "tramos": []}
+            Formato JSON ESTRICTO:
+            {
+              "propietario": "...",
+              "colindantes": ["Norte: ...", "Sur: ..."],
+              "servidumbres": "...",
+              "quebradas": "...",
+              "tramos": [{"rumbo": "N 10° 15' 20\" E", "distancia": 15.50}]
+            }
             """
             
             response = model.generate_content([prompt] + google_files)
