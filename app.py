@@ -25,16 +25,6 @@ else:
     st.stop()
 
 # --- 2. FILTROS MATEMÁTICOS ---
-def calcular_area(puntos):
-    n = len(puntos)
-    if n < 3: return 0.0
-    area = 0.0
-    for i in range(n):
-        j = (i + 1) % n
-        area += puntos[i][0] * puntos[j][1]
-        area -= puntos[j][0] * puntos[i][1]
-    return abs(area) / 2.0
-
 def sanitizar_texto(texto):
     if not texto: return "N/A"
     t = str(texto).replace('\n', ' ').strip()
@@ -137,15 +127,6 @@ def crear_dxf_integral(datos):
     queb = str(datos.get('quebradas', 'No menciona'))
     msp.add_text(f"CUERPOS DE AGUA: {sanitizar_texto(queb)}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
 
-
-# CÁLCULO DE ÁREA AGREGADO AQUÍ
-    y_ref -= 6
-    area_calc = calcular_area(puntos_dwg)
-    msp.add_text("AREA CALCULADA POR CAD:", dxfattribs={'height': 1.0, 'color': 1}).set_placement((x_side, y_ref))
-    y_ref -= 2.0
-    msp.add_text(f"{area_calc:,.2f} metros cuadrados", dxfattribs={'height': 0.7, 'color': 4}).set_placement((x_side + 2, y_ref))
-
-    
     y_ref -= 8
     msp.add_text("CUADRO DE RUMBOS Y DISTANCIAS", dxfattribs={'height': 1.0, 'color': 4}).set_placement((x_side, y_ref))
     y_ref -= 2.0
@@ -169,24 +150,6 @@ def crear_dxf_integral(datos):
     temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Poligono_{int(time.time())}.dxf")
     doc.saveas(temp_path)
     return temp_path
-
-
-# NOTA DE CIERRE AGREGADA AQUÍ
-    if tiene_error_cierre:
-        y_ref -= 5
-        msp.add_text("NOTA DE CIERRE TOPOGRAFICO:", dxfattribs={'height': 0.8, 'color': 1}).set_placement((x_side, y_ref))
-        y_ref -= 1.5
-        msp.add_text("La linea roja indica el error de cierre entre el inicio y fin del poligono.", dxfattribs={'height': 0.45, 'color': 7}).set_placement((x_side + 2, y_ref))
-        y_ref -= 1.0
-        msp.add_text("Esta discrepancia proviene de los datos originales de la escritura,", dxfattribs={'height': 0.45, 'color': 7}).set_placement((x_side + 2, y_ref))
-        y_ref -= 1.0
-        msp.add_text("no es un error de generacion del programa.", dxfattribs={'height': 0.45, 'color': 7}).set_placement((x_side + 2, y_ref))
-
-    temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Poligono_{int(time.time())}.dxf")
-    doc.saveas(temp_path)
-    return temp_path
-
-
 
 # --- 4. INTERFAZ ---
 archivo = st.file_uploader("Sube la Escritura (PDF)", type=["pdf"])
