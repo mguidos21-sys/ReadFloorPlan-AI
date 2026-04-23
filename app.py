@@ -1,7 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
 import ezdxf
-from ezdxf.math import Vec2
 import fitz  # PyMuPDF
 from PIL import Image
 import json
@@ -13,7 +12,7 @@ import time
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Norm.AI - Arquitectura El Salvador", layout="wide")
-st.title("📐 Norm.AI: Poligonal y Expediente Técnico")
+st.title("📐 Norm.AI: Levantamiento y Cierre de Polígonos")
 
 MODELO_ACTIVO = 'gemini-2.5-flash'
 
@@ -24,7 +23,17 @@ else:
     st.error("⚠️ Configura la API Key en los secrets de Streamlit.")
     st.stop()
 
-# --- 2. FILTROS MATEMÁTICOS ---
+# --- 2. FILTROS MATEMÁTICOS Y CÁLCULO DE ÁREA ---
+def calcular_area(puntos):
+    n = len(puntos)
+    if n < 3: return 0.0
+    area = 0.0
+    for i in range(n):
+        j = (i + 1) % n
+        area += puntos[i][0] * puntos[j][1]
+        area -= puntos[j][0] * puntos[i][1]
+    return abs(area) / 2.0
+
 def sanitizar_texto(texto):
     if not texto: return "N/A"
     t = str(texto).replace('\n', ' ').strip()
@@ -65,18 +74,12 @@ def interpretar_rumbo_sv(rumbo_str, ultimo_rad=0.0):
     
     return ultimo_rad
 
-# --- 3. GENERADOR DE DXF (CON ANOTACIONES EN GEOMETRÍA) ---
+# --- 3. GENERADOR DE DXF (ESTABLE) ---
 def crear_dxf_integral(datos):
     doc = ezdxf.new('R2010') 
     doc.header['$INSUNITS'] = 6 # Metros
     msp = doc.modelspace()
     
-    # REGISTRAMOS CAPAS
-    msp.doc.layers.add("POLIGONAL", color=7)
-    msp.doc.layers.add("ANOTACIONES_VERTICES", color=7)
-    msp.doc.layers.add("FICHA_TECNICA", color=2)
-    
-    # --- DIBUJO DE POLIGONAL ---
     current_x, current_y = 0.0, 0.0
     puntos_dwg = [(current_x, current_y)]
     ultimo_rad = 0.0
@@ -92,28 +95,27 @@ def crear_dxf_integral(datos):
             next_x = round(current_x + math.cos(rad) * dist, 4)
             next_y = round(current_y + math.sin(rad) * dist, 4)
             
-            # EL ARREGLO DE ANOTACIÓN: Agregamos la etiqueta L# en cada vértice
-            msp.add_text(f"L{i+1}", 
-                        dxfattribs={
-                            'height': 0.4, 
-                            'layer': 'ANOTACIONES_VERTICES'
-                        }).set_placement((next_x + 0.5, next_y + 0.5)) # Offset pequeño para que no tape la línea
-            
-            puntos_dwg.append((next_x, next_y))
+            # EL ARREGLO VISUAL: Etiquetas (L1, L2) en el punto medio de la línea
+            mid_x = (current_x + next_x) / 2
+            mid_y = (current_y + next_y) / 2
+            msp.add_text(f"L{i+1}", dxfattribs={'height': 0.8, 'color': 3}).set_placement((mid_x + 0.2, mid_y + 0.2))
+
             current_x, current_y = next_x, next_y
+            puntos_dwg.append((current_x, current_y))
             ultimo_rad = rad
 
-    # DIBUJAR COMO POLILÍNEA CONTINUA
+    # DIBUJAR COMO UNA SOLA ENTIDAD (LWPOLYLINE)
+    tiene_error_cierre = False
     if len(puntos_dwg) > 1:
-        msp.add_lwpolyline(puntos_dwg, dxfattribs={'color': 7, 'layer': 'POLIGONAL'})
+        msp.add_lwpolyline(puntos_dwg, dxfattribs={'color': 7})
         
-        # Cierre y error (si es significativo)
         if puntos_dwg[-1] != puntos_dwg[0]:
             dist_cierre = math.sqrt((puntos_dwg[-1][0])**2 + (puntos_dwg[-1][1])**2)
             if dist_cierre > 0.01:
-                msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1, 'layer': 'ERROR_CIERRE'})
+                msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1})
+                tiene_error_cierre = True
 
-    # --- FICHA TÉCNICA (SIDEBAR ORGANIZADO) ---
+    # --- FICHA TÉCNICA ---
     max_x = max([p[0] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     max_y = max([p[1] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     x_side = max_x + 15
@@ -127,6 +129,11 @@ def crear_dxf_integral(datos):
     propietario = str(datos.get('propietario', 'No detectado'))
     msp.add_text(f"PROPIETARIO ACTUAL: {sanitizar_texto(propietario)}", dxfattribs={'height': 0.7}).set_placement((x_side + 2, y_ref))
     
+    # SECCIÓN DE ÁREA
+    y_ref -= 3.5
+    area_calc = calcular_area(puntos_dwg)
+    msp.add_text(f"AREA CALCULADA: {area_calc:,.2f} m2", dxfattribs={'height': 0.8, 'color': 4}).set_placement((x_side + 2, y_ref))
+
     y_ref -= 5
     msp.add_text("COLINDANTES:", dxfattribs={'height': 1.0, 'color': 1}).set_placement((x_side, y_ref))
     colindantes = datos.get('colindantes', [])
@@ -143,7 +150,6 @@ def crear_dxf_integral(datos):
     queb = str(datos.get('quebradas', 'No menciona'))
     msp.add_text(f"CUERPOS DE AGUA: {sanitizar_texto(queb)}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
 
-    # --- CUADRO DE RUMBOS (Ajustado) ---
     y_ref -= 8
     msp.add_text("CUADRO DE RUMBOS Y DISTANCIAS", dxfattribs={'height': 1.0, 'color': 4}).set_placement((x_side, y_ref))
     y_ref -= 2.0
@@ -163,6 +169,17 @@ def crear_dxf_integral(datos):
         msp.add_text(r_val, dxfattribs={'height': 0.5}).set_placement((x_side + 10, y_ref))
         msp.add_text(f"{d_val:.2f} m", dxfattribs={'height': 0.5}).set_placement((x_side + 25, y_ref))
         y_ref -= 1.3
+
+    # SECCIÓN DE NOTA EXPLICATIVA
+    if tiene_error_cierre:
+        y_ref -= 4
+        msp.add_text("NOTA DE CIERRE TOPOGRAFICO:", dxfattribs={'height': 0.8, 'color': 1}).set_placement((x_side, y_ref))
+        y_ref -= 1.5
+        msp.add_text("La linea roja indica el error de cierre entre el inicio y fin del poligono.", dxfattribs={'height': 0.5, 'color': 7}).set_placement((x_side + 2, y_ref))
+        y_ref -= 1.0
+        msp.add_text("Esta discrepancia proviene de los datos originales de la escritura,", dxfattribs={'height': 0.5, 'color': 7}).set_placement((x_side + 2, y_ref))
+        y_ref -= 1.0
+        msp.add_text("no es un error de generacion del programa.", dxfattribs={'height': 0.5, 'color': 7}).set_placement((x_side + 2, y_ref))
 
     temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Poligono_{int(time.time())}.dxf")
     doc.saveas(temp_path)
@@ -190,11 +207,11 @@ if archivo:
                 time.sleep(1); google_files = [genai.get_file(f.name) for f in google_files]
 
             prompt = """
-            Eres un experto legal y catastral salvadoreño. Analiza esta escritura:
-            1. 'propietario': Lee TODO el historial. Identifica al DUEÑO ACTUAL Y DEFINITIVO.
+            Eres un experto legal y catastral. Analiza esta escritura salvadoreña:
+            1. 'propietario': Lee TODO el historial. Identifica al DUEÑO ACTUAL Y DEFINITIVO (ej. la heredera).
             2. 'colindantes': Lista de vecinos.
             3. 'servidumbres' y 'quebradas'.
-            4. 'tramos': Extrae LA LISTA COMPLETA DE TRAMOS que forman TODO EL PERÍMETRO OBLIGATORIAMENTE para cerrar el polígono.
+            4. 'tramos': Extrae TODOS LOS TRAMOS OBLIGATORIAMENTE para cerrar el polígono.
             - 'rumbo_texto': Frase original.
             - 'rumbo_limpio': UNA SOLA PALABRA (NORTE, SUR, ESTE, OESTE) o el grado (N 10° E).
             - 'distancia': Solo número.
@@ -207,9 +224,7 @@ if archivo:
               "quebradas": "...",
               "tramos": [
                 {"rumbo_texto": "Al Norte...", "rumbo_limpio": "NORTE", "distancia": 15.50},
-                {"rumbo_texto": "Al Oriente...", "rumbo_limpio": "ESTE", "distancia": 10.00},
-                {"rumbo_texto": "Al Sur...", "rumbo_limpio": "SUR", "distancia": 15.50},
-                {"rumbo_texto": "Al Poniente...", "rumbo_limpio": "OESTE", "distancia": 10.00}
+                {"rumbo_texto": "Al Oriente...", "rumbo_limpio": "ESTE", "distancia": 10.00}
               ]
             }
             """
@@ -230,5 +245,7 @@ if archivo:
         except Exception as e:
             st.error(f"Error en el motor: {e}")
 
+st.divider()
+st.caption("Norm.AI | Arquitectura & Tecnología | 2026")
 st.divider()
 st.caption(f"Norm.AI | Miguel Guidos - Arquitectura & Tecnología | 2026")
