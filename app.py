@@ -75,7 +75,7 @@ def interpretar_rumbo_sv(rumbo_str, ultimo_rad=0.0):
     
     return ultimo_rad
 
-# --- 3. GENERADOR DE DXF ---
+# --- 3. GENERADOR DE DXF (POLILÍNEA CONTINUA) ---
 def crear_dxf_integral(datos):
     doc = ezdxf.new('R2010') 
     doc.header['$INSUNITS'] = 6 # Metros
@@ -99,15 +99,13 @@ def crear_dxf_integral(datos):
             puntos_dwg.append((current_x, current_y))
             ultimo_rad = rad
 
-    tiene_error_cierre = False
+    # DIBUJAR COMO UNA SOLA ENTIDAD (LWPOLYLINE)
     if len(puntos_dwg) > 1:
         msp.add_lwpolyline(puntos_dwg, dxfattribs={'color': 7, 'layer': 'POLIGONAL'})
         
+        # Si el punto final no coincide con el origen, dibujamos la línea roja del error de cierre
         if puntos_dwg[-1] != puntos_dwg[0]:
-            dist_cierre = math.sqrt((puntos_dwg[-1][0])**2 + (puntos_dwg[-1][1])**2)
-            if dist_cierre > 0.01:
-                msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1, 'layer': 'ERROR_CIERRE'})
-                tiene_error_cierre = True
+            msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1, 'layer': 'ERROR_CIERRE'})
 
     # --- FICHA TÉCNICA ---
     max_x = max([p[0] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
@@ -139,14 +137,16 @@ def crear_dxf_integral(datos):
     queb = str(datos.get('quebradas', 'No menciona'))
     msp.add_text(f"CUERPOS DE AGUA: {sanitizar_texto(queb)}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
 
-    # CÁLCULO DE ÁREA AGREGADO AQUÍ
+
+# CÁLCULO DE ÁREA AGREGADO AQUÍ
     y_ref -= 6
     area_calc = calcular_area(puntos_dwg)
     msp.add_text("AREA CALCULADA POR CAD:", dxfattribs={'height': 1.0, 'color': 1}).set_placement((x_side, y_ref))
     y_ref -= 2.0
     msp.add_text(f"{area_calc:,.2f} metros cuadrados", dxfattribs={'height': 0.7, 'color': 4}).set_placement((x_side + 2, y_ref))
 
-    y_ref -= 6
+    
+    y_ref -= 8
     msp.add_text("CUADRO DE RUMBOS Y DISTANCIAS", dxfattribs={'height': 1.0, 'color': 4}).set_placement((x_side, y_ref))
     y_ref -= 2.0
     
@@ -166,7 +166,12 @@ def crear_dxf_integral(datos):
         msp.add_text(f"{d_val:.2f} m", dxfattribs={'height': 0.5}).set_placement((x_side + 25, y_ref))
         y_ref -= 1.3
 
-    # NOTA DE CIERRE AGREGADA AQUÍ
+    temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Poligono_{int(time.time())}.dxf")
+    doc.saveas(temp_path)
+    return temp_path
+
+
+# NOTA DE CIERRE AGREGADA AQUÍ
     if tiene_error_cierre:
         y_ref -= 5
         msp.add_text("NOTA DE CIERRE TOPOGRAFICO:", dxfattribs={'height': 0.8, 'color': 1}).set_placement((x_side, y_ref))
@@ -180,6 +185,8 @@ def crear_dxf_integral(datos):
     temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Poligono_{int(time.time())}.dxf")
     doc.saveas(temp_path)
     return temp_path
+
+
 
 # --- 4. INTERFAZ ---
 archivo = st.file_uploader("Sube la Escritura (PDF)", type=["pdf"])
@@ -202,7 +209,6 @@ if archivo:
             while any(f.state.name == "PROCESSING" for f in google_files):
                 time.sleep(1); google_files = [genai.get_file(f.name) for f in google_files]
 
-            # EL PROMPT ORIGINAL QUE SÍ FUNCIONÓ
             prompt = """
             Eres un experto legal y catastral. Analiza esta escritura salvadoreña:
             1. 'propietario': Lee TODO el historial. Identifica al DUEÑO ACTUAL Y DEFINITIVO (ej. la heredera).
@@ -221,9 +227,7 @@ if archivo:
               "quebradas": "...",
               "tramos": [
                 {"rumbo_texto": "Al Norte...", "rumbo_limpio": "NORTE", "distancia": 15.50},
-                {"rumbo_texto": "Al Oriente...", "rumbo_limpio": "ESTE", "distancia": 10.00},
-                {"rumbo_texto": "Al Sur...", "rumbo_limpio": "SUR", "distancia": 15.50},
-                {"rumbo_texto": "Al Poniente...", "rumbo_limpio": "OESTE", "distancia": 10.00}
+                {"rumbo_texto": "Al Oriente...", "rumbo_limpio": "ESTE", "distancia": 10.00}
               ]
             }
             """
