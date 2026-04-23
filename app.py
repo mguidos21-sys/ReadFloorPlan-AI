@@ -40,7 +40,7 @@ def interpretar_rumbo_sv(rumbo_str, ultimo_rad=0.0):
     if not rumbo_str or not isinstance(rumbo_str, str): return ultimo_rad
     r = rumbo_str.upper().strip()
     
-    # 1. Intentar extraer con grados exactos (N 10° E)
+    # 1. Regex para grados exactos (N 10° E)
     r_norm = r.replace('OESTE', 'W').replace('PONIENTE', 'W').replace('ORIENTE', 'E').replace('ESTE', 'E')
     r_norm = r_norm.replace('NORTE', 'N').replace('SUR', 'S')
     match = re.search(r'([NS])\s*(\d+)[°\s]*(\d+)[\'\s]*(\d+(?:\.\d+)?)?[\"”\s]*([EW])', r_norm)
@@ -54,12 +54,25 @@ def interpretar_rumbo_sv(rumbo_str, ultimo_rad=0.0):
         elif ns == 'S' and ew == 'W': ang = 270 - dec
         return math.radians(ang)
         
-    # 2. EL ARREGLO: Buscar la palabra cardinal DENTRO de la frase larga
-    if 'NORTE' in r and not any(x in r for x in ['ESTE', 'ORIENTE', 'OESTE', 'PONIENTE']): return math.pi / 2
-    if 'SUR' in r and not any(x in r for x in ['ESTE', 'ORIENTE', 'OESTE', 'PONIENTE']): return 3 * math.pi / 2
-    if 'ESTE' in r or 'ORIENTE' in r: return 0.0
-    if 'OESTE' in r or 'PONIENTE' in r: return math.pi
+    # 2. Buscador Cardinal Agresivo: Busca qué punto cardinal aparece PRIMERO en la frase
+    pos_n = r.find('NORTE')
+    pos_s = r.find('SUR')
+    pos_e = min([p for p in [r.find('ESTE'), r.find('ORIENTE')] if p != -1], default=9999)
+    pos_w = min([p for p in [r.find('OESTE'), r.find('PONIENTE')] if p != -1], default=9999)
     
+    pos = {
+        math.pi / 2: pos_n if pos_n != -1 else 9999,
+        3 * math.pi / 2: pos_s if pos_s != -1 else 9999,
+        0.0: pos_e,
+        math.pi: pos_w
+    }
+    
+    min_pos = min(pos.values())
+    if min_pos != 9999:
+        for angle, position in pos.items():
+            if position == min_pos:
+                return angle
+                
     return ultimo_rad
 
 # --- 3. GENERADOR DE DXF ---
@@ -77,7 +90,9 @@ def crear_dxf_integral(datos):
     for t in tramos:
         if not isinstance(t, dict): continue
         dist = limpiar_numero(t.get('distancia'))
-        rumbo_txt = str(t.get('rumbo', ''))
+        
+        # Priorizamos el rumbo limpio para la matemática
+        rumbo_txt = str(t.get('rumbo_limpio', t.get('rumbo_texto', '')))
         rad = interpretar_rumbo_sv(rumbo_txt, ultimo_rad)
         
         if dist > 0:
@@ -128,21 +143,19 @@ def crear_dxf_integral(datos):
     
     msp.add_text("Linea", dxfattribs={'height': 0.6, 'color': 7}).set_placement((x_side + 2, y_ref))
     msp.add_text("Rumbo", dxfattribs={'height': 0.6, 'color': 7}).set_placement((x_side + 10, y_ref))
-    msp.add_text("Distancia", dxfattribs={'height': 0.6, 'color': 7}).set_placement((x_side + 35, y_ref))
+    msp.add_text("Distancia", dxfattribs={'height': 0.6, 'color': 7}).set_placement((x_side + 25, y_ref))
     y_ref -= 1.5
 
     for i, t in enumerate(tramos):
         if not isinstance(t, dict): continue
         d_val = limpiar_numero(t.get('distancia'))
-        r_val = sanitizar_texto(t.get('rumbo', ''))
         
-        # EL ARREGLO DE LA TABLA: Truncar textos largos para que no tapen la distancia
-        if len(r_val) > 24:
-            r_val = r_val[:21] + "..."
-            
+        # Usamos la variable obligatoria 'rumbo_limpio' para que la tabla quede corta y perfecta
+        r_val = sanitizar_texto(t.get('rumbo_limpio', t.get('rumbo_texto', '')))
+        
         msp.add_text(f"L{i+1}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
         msp.add_text(r_val, dxfattribs={'height': 0.5}).set_placement((x_side + 10, y_ref))
-        msp.add_text(f"{d_val:.2f} m", dxfattribs={'height': 0.5}).set_placement((x_side + 35, y_ref))
+        msp.add_text(f"{d_val:.2f} m", dxfattribs={'height': 0.5}).set_placement((x_side + 25, y_ref))
         y_ref -= 1.3
 
     temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Final_{int(time.time())}.dxf")
@@ -153,7 +166,7 @@ def crear_dxf_integral(datos):
 archivo = st.file_uploader("Sube la Escritura (PDF)", type=["pdf"])
 
 if archivo:
-    if st.button("🚀 Generar Plano Correcto"):
+    if st.button("🚀 Generar Plano y Geometría"):
         try:
             status = st.status("Analizando expediente técnico...", expanded=True)
             doc_pdf = fitz.open(stream=archivo.read(), filetype="pdf")
@@ -170,14 +183,17 @@ if archivo:
             while any(f.state.name == "PROCESSING" for f in google_files):
                 time.sleep(1); google_files = [genai.get_file(f.name) for f in google_files]
 
-            # EL ARREGLO DEL PROMPT: Forzamos a la IA a resumir el rumbo
+            # EL ARREGLO ESTÁ AQUÍ: Le damos a la IA dos variables para que no mezcle el resumen con el texto real
             prompt = """
             Analiza esta escritura y extrae la información en ESPAÑOL:
             1. 'propietario': Nombre completo del titular.
             2. 'colindantes': Lista de vecinos por punto cardinal.
             3. 'servidumbres' y 'quebradas'.
-            4. 'tramos': Lista OBLIGATORIA con 'rumbo' y 'distancia'.
-            IMPORTANTE: En 'rumbo', escribe SOLO la dirección principal (Ej: "NORTE" o "N 10° E"). OMITE frases largas como "en linea recta de...".
+            4. 'tramos': Lista OBLIGATORIA. 
+            Para cada tramo debes extraer 3 cosas:
+            - 'rumbo_texto': El texto original de la escritura.
+            - 'rumbo_limpio': SOLO UNA PALABRA (NORTE, SUR, ESTE, OESTE) o el grado exacto (N 10° E).
+            - 'distancia': Solo número.
             
             Formato JSON ESTRICTO:
             {
@@ -185,7 +201,7 @@ if archivo:
               "colindantes": ["Norte: ...", "Sur: ..."],
               "servidumbres": "...",
               "quebradas": "...",
-              "tramos": [{"rumbo": "Norte", "distancia": 15.50}]
+              "tramos": [{"rumbo_texto": "Al Norte en linea recta...", "rumbo_limpio": "NORTE", "distancia": 15.50}]
             }
             """
             
