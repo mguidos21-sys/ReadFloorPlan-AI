@@ -11,8 +11,8 @@ import tempfile
 import time
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="Norm.AI - Topografía El Salvador", layout="wide")
-st.title("📐 Norm.AI: Expediente Técnico y Poligonal")
+st.set_page_config(page_title="Norm.AI - Topografía Profesional El Salvador", layout="wide")
+st.title("📐 Norm.AI: Expediente Técnico y Análisis de Cierre")
 
 MODELO_ACTIVO = 'gemini-2.5-flash'
 
@@ -20,11 +20,12 @@ if "GOOGLE_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
     model = genai.GenerativeModel(model_name=MODELO_ACTIVO)
 else:
-    st.error("⚠️ Configura la API Key.")
+    st.error("⚠️ Configura la API Key en los secrets de Streamlit.")
     st.stop()
 
-# --- 2. FILTROS MATEMÁTICOS ---
+# --- 2. FILTROS MATEMÁTICOS Y CÁLCULO DE ÁREA ---
 def calcular_area(puntos):
+    """Calcula el área de un polígono usando la fórmula de Shoelace (Gauss)"""
     n = len(puntos)
     if n < 3: return 0.0
     area = 0.0
@@ -74,10 +75,10 @@ def interpretar_rumbo_sv(rumbo_str, ultimo_rad=0.0):
 
     return ultimo_rad
 
-# --- 3. GENERADOR DE DXF ---
+# --- 3. GENERADOR DE DXF (PROFESIONAL, CON MEDIOS PUNTOS) ---
 def crear_dxf_integral(datos):
     doc = ezdxf.new('R2010')
-    doc.header['$INSUNITS'] = 6
+    doc.header['$INSUNITS'] = 6 # Metros
     msp = doc.modelspace()
 
     current_x, current_y = 0.0, 0.0
@@ -95,7 +96,7 @@ def crear_dxf_integral(datos):
             next_x = round(current_x + math.cos(rad) * dist, 4)
             next_y = round(current_y + math.sin(rad) * dist, 4)
 
-            # ETIQUETAS L1, L2 EN EL PUNTO MEDIO DE LA LÍNEA
+            # EL ARREGLO VISUAL PROFESIONAL: Etiquetas (L1, L2...) en el PUNTO MEDIO de la línea
             mid_x = (current_x + next_x) / 2
             mid_y = (current_y + next_y) / 2
             msp.add_text(f"L{i+1}", dxfattribs={'height': 0.8, 'color': 3}).set_placement((mid_x + 0.3, mid_y + 0.3))
@@ -104,16 +105,18 @@ def crear_dxf_integral(datos):
             puntos_dwg.append((current_x, current_y))
             ultimo_rad = rad
 
+    # DIBUJAR COMO UNA SOLA ENTIDAD CONTINUA (LWPOLYLINE)
     tiene_error_cierre = False
     if len(puntos_dwg) > 1:
-        msp.add_lwpolyline(puntos_dwg, dxfattribs={'color': 7})
+        msp.add_lwpolyline(puntos_dwg, dxfattribs={'color': 7}) # color 7 = blanco/negro
 
         if puntos_dwg[-1] != puntos_dwg[0]:
             dist_cierre = math.sqrt((puntos_dwg[-1][0])**2 + (puntos_dwg[-1][1])**2)
             if dist_cierre > 0.01:
-                msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1})
+                msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1}) # color 1 = rojo
                 tiene_error_cierre = True
 
+    # --- FICHA TÉCNICA (SIDEBAR ORGANIZADO) ---
     max_x = max([p[0] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     max_y = max([p[1] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     x_side = max_x + 15
@@ -127,9 +130,10 @@ def crear_dxf_integral(datos):
     propietario = str(datos.get('propietario', 'No detectado'))
     msp.add_text(f"PROPIETARIO ACTUAL: {sanitizar_texto(propietario)}", dxfattribs={'height': 0.7}).set_placement((x_side + 2, y_ref))
 
+    # SECCIÓN DE ÁREA AGREGADA AQUÍ
     y_ref -= 3.5
     area_calc = calcular_area(puntos_dwg)
-    msp.add_text(f"AREA CALCULADA CAD: {area_calc:,.2f} m2", dxfattribs={'height': 0.8, 'color': 4}).set_placement((x_side + 2, y_ref))
+    msp.add_text(f"AREA CALCULADA POR CAD: {area_calc:,.2f} m2", dxfattribs={'height': 0.8, 'color': 4}).set_placement((x_side + 2, y_ref))
 
     y_ref -= 5
     msp.add_text("COLINDANTES:", dxfattribs={'height': 1.0, 'color': 1}).set_placement((x_side, y_ref))
@@ -167,17 +171,18 @@ def crear_dxf_integral(datos):
         msp.add_text(f"{d_val:.2f} m", dxfattribs={'height': 0.5}).set_placement((x_side + 25, y_ref))
         y_ref -= 1.3
 
+    # NOTA EXPLICATIVA DE LA LÍNEA ROJA (Pedagógica)
     if tiene_error_cierre:
         y_ref -= 4
         msp.add_text("NOTA DE CIERRE TOPOGRAFICO:", dxfattribs={'height': 0.8, 'color': 1}).set_placement((x_side, y_ref))
         y_ref -= 1.5
-        msp.add_text("La linea roja indica el error de cierre del poligono.", dxfattribs={'height': 0.5, 'color': 7}).set_placement((x_side + 2, y_ref))
+        msp.add_text("La linea roja indica el error de cierre entre el inicio y fin del poligono.", dxfattribs={'height': 0.5, 'color': 7}).set_placement((x_side + 2, y_ref))
         y_ref -= 1.0
         msp.add_text("Esta discrepancia proviene de los datos de la escritura,", dxfattribs={'height': 0.5, 'color': 7}).set_placement((x_side + 2, y_ref))
         y_ref -= 1.0
         msp.add_text("no es un error de calculo del sistema Norm.AI.", dxfattribs={'height': 0.5, 'color': 7}).set_placement((x_side + 2, y_ref))
 
-    temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Poligono_{int(time.time())}.dxf")
+    temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Expediente_{int(time.time())}.dxf")
     doc.saveas(temp_path)
     return temp_path
 
@@ -185,9 +190,9 @@ def crear_dxf_integral(datos):
 archivo = st.file_uploader("Sube la Escritura (PDF)", type=["pdf"])
 
 if archivo:
-    if st.button("🚀 Extraer y Trazar Plano"):
+    if st.button("🚀 Extraer y Trazar Expediente Técnico"):
         try:
-            status = st.status("Analizando expediente legal...", expanded=True)
+            status = st.status("Analizando historial legal y levantamiento catastral...", expanded=True)
             doc_pdf = fitz.open(stream=archivo.read(), filetype="pdf")
             google_files = []
 
@@ -202,18 +207,18 @@ if archivo:
             while any(f.state.name == "PROCESSING" for f in google_files):
                 time.sleep(1); google_files = [genai.get_file(f.name) for f in google_files]
 
-            # EL PROMPT RESTAURADO PARA QUE LEA TODO EL TERRENO
+            # EL PROMPT ORIGINAL QUE SÍ FUNCIONÓ (RESTAURADO COMPLETAMENTE)
             prompt = """
             Eres un experto legal y catastral salvadoreño. Analiza esta escritura:
-            1. 'propietario': Lee TODO el historial y extrae al DUEÑO ACTUAL Y DEFINITIVO.
-            2. 'colindantes': Lista de vecinos.
-            3. 'servidumbres' y 'quebradas'.
-            4. 'tramos': Extrae TODOS LOS TRAMOS SIN SALTARTE NINGUNO para cerrar el polígono completo.
-            - 'rumbo_texto': Frase original.
-            - 'rumbo_limpio': UNA SOLA PALABRA (NORTE, SUR, ESTE, OESTE) o el grado (N 10° E).
+            1. 'propietario': Lee TODO el historial de herencias o traspasos. Identifica al DUEÑO ACTUAL Y DEFINITIVO.
+            2. 'colindantes': Lista de vecinos por punto cardinal.
+            3. 'servidumbres' y 'quebradas': Menciona cualquier restricción de paso o hídrica.
+            4. 'tramos': Extrae LA LISTA COMPLETA DE TRAMOS OBLIGATORIAMENTE para cerrar el polígono completo de la propiedad.
+            - 'rumbo_texto': Frase original de la escritura (ej. 'Al Norte 10° Oriente...').
+            - 'rumbo_limpio': UNA SOLA PALABRA (NORTE, SUR, ESTE, OESTE) o el grado exacto (N 10° E).
             - 'distancia': Solo número.
 
-            Formato JSON ESTRICTO:
+            Formato JSON ESTRICTO (Asegúrate de extraer todos los linderos, no solo dos ejemplos):
             {
               "propietario": "Nombre de la dueña actual",
               "colindantes": ["Norte: ...", "Sur: ..."],
@@ -235,15 +240,14 @@ if archivo:
 
             ruta_dxf = crear_dxf_integral(datos)
 
-            status.update(label="✅ Expediente Técnico Listo", state="complete")
+            status.update(label="✅ Poligonal y Expediente Listos", state="complete")
             with open(ruta_dxf, "rb") as f:
-                st.download_button("💾 DESCARGAR DXF", f, file_name="Plano_NormAI_Final.dxf")
+                st.download_button("💾 DESCARGAR DXF PROFESIONAL", f, file_name="NormAI_Plano_Ingenieria.dxf")
 
             for f in google_files: genai.delete_file(f.name)
 
         except Exception as e:
-            st.error(f"Error en el motor: {e}")
-
+            st.error(f"Error en el motor legal Norm.AI: {e}")
 
 st.divider()
-st.caption(f"Norm.AI | Miguel Guidos - Arquitectura & Tecnología | 2026")
+st.caption("Norm.AI | Arquitectura & Tecnología | Miguel Guidos")
