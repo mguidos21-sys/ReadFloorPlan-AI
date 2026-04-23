@@ -210,6 +210,6 @@ if archivo:
 
         except Exception as e:
             st.error(f"Error en el motor: {e}")
-            
+
 st.divider()
 st.caption(f"Norm.AI | Miguel Guidos - Arquitectura & Tecnología | 2026")
