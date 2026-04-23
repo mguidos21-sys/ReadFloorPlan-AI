@@ -13,7 +13,7 @@ import time
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Norm.AI - Arquitectura El Salvador", layout="wide")
-st.title("📐 Norm.AI: Expediente Técnico y Poligonal")
+st.title("📐 Norm.AI: Análisis Legal y Levantamiento")
 
 MODELO_ACTIVO = 'gemini-2.5-flash'
 
@@ -24,7 +24,7 @@ else:
     st.error("⚠️ Configura la API Key.")
     st.stop()
 
-# --- 2. FILTROS DE LIMPIEZA ---
+# --- 2. FILTROS MATEMÁTICOS Y DE LIMPIEZA ---
 def sanitizar_texto(texto):
     if not texto: return "N/A"
     t = str(texto).replace('\n', ' ').strip()
@@ -40,7 +40,13 @@ def interpretar_rumbo_sv(rumbo_str, ultimo_rad=0.0):
     if not rumbo_str or not isinstance(rumbo_str, str): return ultimo_rad
     r = rumbo_str.upper().strip()
     
-    # 1. Regex para grados exactos (N 10° E)
+    # 1. Búsqueda de Puntos Cardinales Exactos (Fuerza Bruta)
+    if r in ['N', 'NORTE']: return math.pi / 2
+    if r in ['S', 'SUR']: return 3 * math.pi / 2
+    if r in ['E', 'ESTE', 'ORIENTE']: return 0.0
+    if r in ['W', 'OESTE', 'PONIENTE']: return math.pi
+    
+    # 2. Regex para rumbos con grados, minutos y segundos
     r_norm = r.replace('OESTE', 'W').replace('PONIENTE', 'W').replace('ORIENTE', 'E').replace('ESTE', 'E')
     r_norm = r_norm.replace('NORTE', 'N').replace('SUR', 'S')
     match = re.search(r'([NS])\s*(\d+)[°\s]*(\d+)[\'\s]*(\d+(?:\.\d+)?)?[\"”\s]*([EW])', r_norm)
@@ -54,25 +60,12 @@ def interpretar_rumbo_sv(rumbo_str, ultimo_rad=0.0):
         elif ns == 'S' and ew == 'W': ang = 270 - dec
         return math.radians(ang)
         
-    # 2. Buscador Cardinal Agresivo: Busca qué punto cardinal aparece PRIMERO en la frase
-    pos_n = r.find('NORTE')
-    pos_s = r.find('SUR')
-    pos_e = min([p for p in [r.find('ESTE'), r.find('ORIENTE')] if p != -1], default=9999)
-    pos_w = min([p for p in [r.find('OESTE'), r.find('PONIENTE')] if p != -1], default=9999)
+    # 3. Fallback: Buscar la palabra cardinal escondida en el texto
+    if 'NORTE' in r: return math.pi / 2
+    if 'SUR' in r: return 3 * math.pi / 2
+    if 'ESTE' in r or 'ORIENTE' in r: return 0.0
+    if 'OESTE' in r or 'PONIENTE' in r: return math.pi
     
-    pos = {
-        math.pi / 2: pos_n if pos_n != -1 else 9999,
-        3 * math.pi / 2: pos_s if pos_s != -1 else 9999,
-        0.0: pos_e,
-        math.pi: pos_w
-    }
-    
-    min_pos = min(pos.values())
-    if min_pos != 9999:
-        for angle, position in pos.items():
-            if position == min_pos:
-                return angle
-                
     return ultimo_rad
 
 # --- 3. GENERADOR DE DXF ---
@@ -81,7 +74,7 @@ def crear_dxf_integral(datos):
     doc.header['$INSUNITS'] = 6 # Metros
     msp = doc.modelspace()
     
-    # --- DIBUJO DE GEOMETRÍA ---
+    # --- GEOMETRÍA ---
     current_x, current_y = 0.0, 0.0
     puntos_dwg = [(current_x, current_y)]
     ultimo_rad = 0.0
@@ -90,8 +83,6 @@ def crear_dxf_integral(datos):
     for t in tramos:
         if not isinstance(t, dict): continue
         dist = limpiar_numero(t.get('distancia'))
-        
-        # Priorizamos el rumbo limpio para la matemática
         rumbo_txt = str(t.get('rumbo_limpio', t.get('rumbo_texto', '')))
         rad = interpretar_rumbo_sv(rumbo_txt, ultimo_rad)
         
@@ -107,7 +98,7 @@ def crear_dxf_integral(datos):
     if len(puntos_dwg) > 2:
         msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1})
 
-    # --- FICHA TÉCNICA (SIDEBAR) ---
+    # --- FICHA TÉCNICA ---
     max_x = max([p[0] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     max_y = max([p[1] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     x_side = max_x + 15
@@ -119,7 +110,7 @@ def crear_dxf_integral(datos):
     msp.add_text("DATOS GENERALES:", dxfattribs={'height': 1.0, 'color': 1}).set_placement((x_side, y_ref))
     y_ref -= 2.5
     propietario = str(datos.get('propietario', 'No detectado'))
-    msp.add_text(f"PROPIETARIO: {sanitizar_texto(propietario)}", dxfattribs={'height': 0.7}).set_placement((x_side + 2, y_ref))
+    msp.add_text(f"PROPIETARIO ACTUAL: {sanitizar_texto(propietario)}", dxfattribs={'height': 0.7}).set_placement((x_side + 2, y_ref))
     
     y_ref -= 5
     msp.add_text("COLINDANTES:", dxfattribs={'height': 1.0, 'color': 1}).set_placement((x_side, y_ref))
@@ -149,16 +140,15 @@ def crear_dxf_integral(datos):
     for i, t in enumerate(tramos):
         if not isinstance(t, dict): continue
         d_val = limpiar_numero(t.get('distancia'))
-        
-        # Usamos la variable obligatoria 'rumbo_limpio' para que la tabla quede corta y perfecta
         r_val = sanitizar_texto(t.get('rumbo_limpio', t.get('rumbo_texto', '')))
-        
+        if len(r_val) > 22: r_val = r_val[:19] + "..."
+            
         msp.add_text(f"L{i+1}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
         msp.add_text(r_val, dxfattribs={'height': 0.5}).set_placement((x_side + 10, y_ref))
         msp.add_text(f"{d_val:.2f} m", dxfattribs={'height': 0.5}).set_placement((x_side + 25, y_ref))
         y_ref -= 1.3
 
-    temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Final_{int(time.time())}.dxf")
+    temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Expediente_{int(time.time())}.dxf")
     doc.saveas(temp_path)
     return temp_path
 
@@ -166,9 +156,9 @@ def crear_dxf_integral(datos):
 archivo = st.file_uploader("Sube la Escritura (PDF)", type=["pdf"])
 
 if archivo:
-    if st.button("🚀 Generar Plano y Geometría"):
+    if st.button("🚀 Extraer Dueño Actual y Poligonal"):
         try:
-            status = st.status("Analizando expediente técnico...", expanded=True)
+            status = st.status("Analizando historial legal y técnico...", expanded=True)
             doc_pdf = fitz.open(stream=archivo.read(), filetype="pdf")
             google_files = []
             
@@ -183,25 +173,29 @@ if archivo:
             while any(f.state.name == "PROCESSING" for f in google_files):
                 time.sleep(1); google_files = [genai.get_file(f.name) for f in google_files]
 
-            # EL ARREGLO ESTÁ AQUÍ: Le damos a la IA dos variables para que no mezcle el resumen con el texto real
+            # EL ARREGLO DE IA: Forzando contexto legal y múltiples tramos
             prompt = """
-            Analiza esta escritura y extrae la información en ESPAÑOL:
-            1. 'propietario': Nombre completo del titular.
-            2. 'colindantes': Lista de vecinos por punto cardinal.
+            Eres un experto legal y catastral. Analiza esta escritura salvadoreña:
+            1. 'propietario': Lee TODO el historial. Identifica al DUEÑO ACTUAL Y DEFINITIVO (ej. si hubo una herencia, extrae a la persona que heredó el 100%, ignora a los dueños anteriores).
+            2. 'colindantes': Lista de vecinos.
             3. 'servidumbres' y 'quebradas'.
-            4. 'tramos': Lista OBLIGATORIA. 
-            Para cada tramo debes extraer 3 cosas:
-            - 'rumbo_texto': El texto original de la escritura.
-            - 'rumbo_limpio': SOLO UNA PALABRA (NORTE, SUR, ESTE, OESTE) o el grado exacto (N 10° E).
+            4. 'tramos': Extrae TODOS LOS TRAMOS OBLIGATORIAMENTE para cerrar el polígono.
+            - 'rumbo_texto': Frase original.
+            - 'rumbo_limpio': UNA SOLA PALABRA (NORTE, SUR, ESTE, OESTE) o el grado (N 10° E).
             - 'distancia': Solo número.
             
             Formato JSON ESTRICTO:
             {
-              "propietario": "...",
+              "propietario": "Nombre de la dueña actual",
               "colindantes": ["Norte: ...", "Sur: ..."],
               "servidumbres": "...",
               "quebradas": "...",
-              "tramos": [{"rumbo_texto": "Al Norte en linea recta...", "rumbo_limpio": "NORTE", "distancia": 15.50}]
+              "tramos": [
+                {"rumbo_texto": "Al Norte...", "rumbo_limpio": "NORTE", "distancia": 15.50},
+                {"rumbo_texto": "Al Oriente...", "rumbo_limpio": "ESTE", "distancia": 10.00},
+                {"rumbo_texto": "Al Sur...", "rumbo_limpio": "SUR", "distancia": 15.50},
+                {"rumbo_texto": "Al Poniente...", "rumbo_limpio": "OESTE", "distancia": 10.00}
+              ]
             }
             """
             
@@ -212,7 +206,7 @@ if archivo:
             
             ruta_dxf = crear_dxf_integral(datos)
             
-            status.update(label="✅ Plano Generado Exitosamente", state="complete")
+            status.update(label="✅ Expediente Generado Exitosamente", state="complete")
             with open(ruta_dxf, "rb") as f:
                 st.download_button("💾 DESCARGAR DXF", f, file_name="Plano_NormAI_Final.dxf")
             
