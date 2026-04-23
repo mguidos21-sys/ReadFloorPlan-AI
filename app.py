@@ -40,15 +40,10 @@ def interpretar_rumbo_sv(rumbo_str, ultimo_rad=0.0):
     if not rumbo_str or not isinstance(rumbo_str, str): return ultimo_rad
     r = rumbo_str.upper().strip()
     
-    # EL ARREGLO: Soporte nativo para puntos cardinales puros (Sin grados)
-    if r in ['NORTE', 'N']: return math.pi / 2          # 90 grados hacia arriba
-    if r in ['SUR', 'S']: return 3 * math.pi / 2        # 270 grados hacia abajo
-    if r in ['ESTE', 'ORIENTE', 'E']: return 0.0        # 0 grados hacia la derecha
-    if r in ['OESTE', 'PONIENTE', 'W']: return math.pi  # 180 grados hacia la izquierda
-
-    # Si trae grados, aplicamos la fórmula normal
-    r = r.replace('OESTE', 'W').replace('PONIENTE', 'W').replace('ORIENTE', 'E').replace('ESTE', 'E')
-    match = re.search(r'([NS])\s*(\d+)[°\s]*(\d+)[\'\s]*(\d+(?:\.\d+)?)?[\"”\s]*([EW])', r)
+    # 1. Intentar extraer con grados exactos (N 10° E)
+    r_norm = r.replace('OESTE', 'W').replace('PONIENTE', 'W').replace('ORIENTE', 'E').replace('ESTE', 'E')
+    r_norm = r_norm.replace('NORTE', 'N').replace('SUR', 'S')
+    match = re.search(r'([NS])\s*(\d+)[°\s]*(\d+)[\'\s]*(\d+(?:\.\d+)?)?[\"”\s]*([EW])', r_norm)
     if match:
         ns, g, m, s, ew = match.groups()
         seg = float(s) if s else 0.0
@@ -58,6 +53,13 @@ def interpretar_rumbo_sv(rumbo_str, ultimo_rad=0.0):
         elif ns == 'S' and ew == 'E': ang = 270 + dec
         elif ns == 'S' and ew == 'W': ang = 270 - dec
         return math.radians(ang)
+        
+    # 2. EL ARREGLO: Buscar la palabra cardinal DENTRO de la frase larga
+    if 'NORTE' in r and not any(x in r for x in ['ESTE', 'ORIENTE', 'OESTE', 'PONIENTE']): return math.pi / 2
+    if 'SUR' in r and not any(x in r for x in ['ESTE', 'ORIENTE', 'OESTE', 'PONIENTE']): return 3 * math.pi / 2
+    if 'ESTE' in r or 'ORIENTE' in r: return 0.0
+    if 'OESTE' in r or 'PONIENTE' in r: return math.pi
+    
     return ultimo_rad
 
 # --- 3. GENERADOR DE DXF ---
@@ -120,12 +122,10 @@ def crear_dxf_integral(datos):
     queb = str(datos.get('quebradas', 'No menciona'))
     msp.add_text(f"CUERPOS DE AGUA: {sanitizar_texto(queb)}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
 
-    # EL ARREGLO DE LA TABLA: Columnas alineadas mediante coordenadas fijas
     y_ref -= 8
     msp.add_text("CUADRO DE RUMBOS Y DISTANCIAS", dxfattribs={'height': 1.0, 'color': 4}).set_placement((x_side, y_ref))
     y_ref -= 2.0
     
-    # Encabezados en columnas
     msp.add_text("Linea", dxfattribs={'height': 0.6, 'color': 7}).set_placement((x_side + 2, y_ref))
     msp.add_text("Rumbo", dxfattribs={'height': 0.6, 'color': 7}).set_placement((x_side + 10, y_ref))
     msp.add_text("Distancia", dxfattribs={'height': 0.6, 'color': 7}).set_placement((x_side + 35, y_ref))
@@ -136,7 +136,10 @@ def crear_dxf_integral(datos):
         d_val = limpiar_numero(t.get('distancia'))
         r_val = sanitizar_texto(t.get('rumbo', ''))
         
-        # Datos en columnas
+        # EL ARREGLO DE LA TABLA: Truncar textos largos para que no tapen la distancia
+        if len(r_val) > 24:
+            r_val = r_val[:21] + "..."
+            
         msp.add_text(f"L{i+1}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
         msp.add_text(r_val, dxfattribs={'height': 0.5}).set_placement((x_side + 10, y_ref))
         msp.add_text(f"{d_val:.2f} m", dxfattribs={'height': 0.5}).set_placement((x_side + 35, y_ref))
@@ -167,12 +170,14 @@ if archivo:
             while any(f.state.name == "PROCESSING" for f in google_files):
                 time.sleep(1); google_files = [genai.get_file(f.name) for f in google_files]
 
+            # EL ARREGLO DEL PROMPT: Forzamos a la IA a resumir el rumbo
             prompt = """
             Analiza esta escritura y extrae la información en ESPAÑOL:
             1. 'propietario': Nombre completo del titular.
             2. 'colindantes': Lista de vecinos por punto cardinal.
             3. 'servidumbres' y 'quebradas'.
-            4. 'tramos': Lista OBLIGATORIA con 'rumbo' (texto literal de la escritura) y 'distancia' (solo número).
+            4. 'tramos': Lista OBLIGATORIA con 'rumbo' y 'distancia'.
+            IMPORTANTE: En 'rumbo', escribe SOLO la dirección principal (Ej: "NORTE" o "N 10° E"). OMITE frases largas como "en linea recta de...".
             
             Formato JSON ESTRICTO:
             {
