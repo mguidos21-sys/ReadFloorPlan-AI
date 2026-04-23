@@ -13,7 +13,7 @@ import time
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Norm.AI - Arquitectura El Salvador", layout="wide")
-st.title("📐 Norm.AI: Análisis Legal y Levantamiento")
+st.title("📐 Norm.AI: Levantamiento y Cierre de Polígonos")
 
 MODELO_ACTIVO = 'gemini-2.5-flash'
 
@@ -21,10 +21,10 @@ if "GOOGLE_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
     model = genai.GenerativeModel(model_name=MODELO_ACTIVO)
 else:
-    st.error("⚠️ Configura la API Key.")
+    st.error("⚠️ Configura la API Key en los secrets de Streamlit.")
     st.stop()
 
-# --- 2. FILTROS MATEMÁTICOS Y DE LIMPIEZA ---
+# --- 2. FILTROS MATEMÁTICOS ---
 def sanitizar_texto(texto):
     if not texto: return "N/A"
     t = str(texto).replace('\n', ' ').strip()
@@ -40,13 +40,11 @@ def interpretar_rumbo_sv(rumbo_str, ultimo_rad=0.0):
     if not rumbo_str or not isinstance(rumbo_str, str): return ultimo_rad
     r = rumbo_str.upper().strip()
     
-    # 1. Búsqueda de Puntos Cardinales Exactos (Fuerza Bruta)
     if r in ['N', 'NORTE']: return math.pi / 2
     if r in ['S', 'SUR']: return 3 * math.pi / 2
     if r in ['E', 'ESTE', 'ORIENTE']: return 0.0
     if r in ['W', 'OESTE', 'PONIENTE']: return math.pi
     
-    # 2. Regex para rumbos con grados, minutos y segundos
     r_norm = r.replace('OESTE', 'W').replace('PONIENTE', 'W').replace('ORIENTE', 'E').replace('ESTE', 'E')
     r_norm = r_norm.replace('NORTE', 'N').replace('SUR', 'S')
     match = re.search(r'([NS])\s*(\d+)[°\s]*(\d+)[\'\s]*(\d+(?:\.\d+)?)?[\"”\s]*([EW])', r_norm)
@@ -60,7 +58,6 @@ def interpretar_rumbo_sv(rumbo_str, ultimo_rad=0.0):
         elif ns == 'S' and ew == 'W': ang = 270 - dec
         return math.radians(ang)
         
-    # 3. Fallback: Buscar la palabra cardinal escondida en el texto
     if 'NORTE' in r: return math.pi / 2
     if 'SUR' in r: return 3 * math.pi / 2
     if 'ESTE' in r or 'ORIENTE' in r: return 0.0
@@ -68,13 +65,12 @@ def interpretar_rumbo_sv(rumbo_str, ultimo_rad=0.0):
     
     return ultimo_rad
 
-# --- 3. GENERADOR DE DXF ---
+# --- 3. GENERADOR DE DXF (POLILÍNEA CONTINUA) ---
 def crear_dxf_integral(datos):
     doc = ezdxf.new('R2010') 
     doc.header['$INSUNITS'] = 6 # Metros
     msp = doc.modelspace()
     
-    # --- GEOMETRÍA ---
     current_x, current_y = 0.0, 0.0
     puntos_dwg = [(current_x, current_y)]
     ultimo_rad = 0.0
@@ -89,14 +85,17 @@ def crear_dxf_integral(datos):
         if dist > 0:
             next_x = round(current_x + math.cos(rad) * dist, 4)
             next_y = round(current_y + math.sin(rad) * dist, 4)
-            color_linea = 3 if "ARCO" in rumbo_txt.upper() else 7
-            msp.add_line((current_x, current_y), (next_x, next_y), dxfattribs={'color': color_linea})
             current_x, current_y = next_x, next_y
             puntos_dwg.append((current_x, current_y))
             ultimo_rad = rad
 
-    if len(puntos_dwg) > 2:
-        msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1})
+    # DIBUJAR COMO UNA SOLA ENTIDAD (LWPOLYLINE)
+    if len(puntos_dwg) > 1:
+        msp.add_lwpolyline(puntos_dwg, dxfattribs={'color': 7, 'layer': 'POLIGONAL'})
+        
+        # Si el punto final no coincide con el origen, dibujamos la línea roja del error de cierre
+        if puntos_dwg[-1] != puntos_dwg[0]:
+            msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1, 'layer': 'ERROR_CIERRE'})
 
     # --- FICHA TÉCNICA ---
     max_x = max([p[0] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
@@ -148,7 +147,7 @@ def crear_dxf_integral(datos):
         msp.add_text(f"{d_val:.2f} m", dxfattribs={'height': 0.5}).set_placement((x_side + 25, y_ref))
         y_ref -= 1.3
 
-    temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Expediente_{int(time.time())}.dxf")
+    temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Poligono_{int(time.time())}.dxf")
     doc.saveas(temp_path)
     return temp_path
 
@@ -156,9 +155,9 @@ def crear_dxf_integral(datos):
 archivo = st.file_uploader("Sube la Escritura (PDF)", type=["pdf"])
 
 if archivo:
-    if st.button("🚀 Extraer Dueño Actual y Poligonal"):
+    if st.button("🚀 Extraer Dueño Actual y Trazar Polígono"):
         try:
-            status = st.status("Analizando historial legal y técnico...", expanded=True)
+            status = st.status("Analizando historial legal y levantamiento...", expanded=True)
             doc_pdf = fitz.open(stream=archivo.read(), filetype="pdf")
             google_files = []
             
@@ -173,10 +172,9 @@ if archivo:
             while any(f.state.name == "PROCESSING" for f in google_files):
                 time.sleep(1); google_files = [genai.get_file(f.name) for f in google_files]
 
-            # EL ARREGLO DE IA: Forzando contexto legal y múltiples tramos
             prompt = """
             Eres un experto legal y catastral. Analiza esta escritura salvadoreña:
-            1. 'propietario': Lee TODO el historial. Identifica al DUEÑO ACTUAL Y DEFINITIVO (ej. si hubo una herencia, extrae a la persona que heredó el 100%, ignora a los dueños anteriores).
+            1. 'propietario': Lee TODO el historial. Identifica al DUEÑO ACTUAL Y DEFINITIVO (ej. la heredera).
             2. 'colindantes': Lista de vecinos.
             3. 'servidumbres' y 'quebradas'.
             4. 'tramos': Extrae TODOS LOS TRAMOS OBLIGATORIAMENTE para cerrar el polígono.
@@ -192,9 +190,7 @@ if archivo:
               "quebradas": "...",
               "tramos": [
                 {"rumbo_texto": "Al Norte...", "rumbo_limpio": "NORTE", "distancia": 15.50},
-                {"rumbo_texto": "Al Oriente...", "rumbo_limpio": "ESTE", "distancia": 10.00},
-                {"rumbo_texto": "Al Sur...", "rumbo_limpio": "SUR", "distancia": 15.50},
-                {"rumbo_texto": "Al Poniente...", "rumbo_limpio": "OESTE", "distancia": 10.00}
+                {"rumbo_texto": "Al Oriente...", "rumbo_limpio": "ESTE", "distancia": 10.00}
               ]
             }
             """
@@ -206,7 +202,7 @@ if archivo:
             
             ruta_dxf = crear_dxf_integral(datos)
             
-            status.update(label="✅ Expediente Generado Exitosamente", state="complete")
+            status.update(label="✅ Polígono Generado Exitosamente", state="complete")
             with open(ruta_dxf, "rb") as f:
                 st.download_button("💾 DESCARGAR DXF", f, file_name="Plano_NormAI_Final.dxf")
             
