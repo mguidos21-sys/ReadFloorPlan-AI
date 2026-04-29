@@ -12,7 +12,7 @@ import time
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Norm.AI - Edición Profesional", layout="wide")
-st.title("📐 Norm.AI: Levantamiento de Macro-Terrenos y Auditoría de Área")
+st.title("📐 Norm.AI: Levantamiento de Macro-Terrenos y Auditoría")
 
 MODELO_ACTIVO = 'gemini-2.5-flash'
 
@@ -23,7 +23,7 @@ else:
     st.error("⚠️ Configura la API Key.")
     st.stop()
 
-# --- 2. FILTROS MATEMÁTICOS Y CÁLCULO DE ÁREA ---
+# --- 2. FILTROS MATEMÁTICOS ---
 def calcular_area(puntos):
     n = len(puntos)
     if n < 3: return 0.0
@@ -45,13 +45,12 @@ def limpiar_numero(valor):
     numeros = re.findall(r"[-+]?\d*\.\d+|\d+", str(valor).replace(',', '.'))
     if not numeros: return 0.0
     n = float(numeros[0])
-    return n if n > 0.05 else 0.0 # Filtro contra ruido OCR de 0.01m
+    return n if n > 0.05 else 0.0 # Filtro contra ruido OCR
 
 def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
     if not texto: return ultimo_rad
     t = str(texto).upper().strip()
     
-    # 1. Azimut (0-360)
     match_az = re.search(r'(\d+)\s*[°º]\s*(\d+)\s*[\'’]\s*(\d+(?:\.\d+)?)?\s*["”]', t)
     if match_az and not any(x in t for x in ['N', 'S', 'E', 'W', 'O']):
         g, m, s = match_az.groups()
@@ -59,7 +58,6 @@ def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
         dec = float(g) + float(m)/60 + seg/3600
         return math.radians(90 - dec)
 
-    # 2. Rumbo Tradicional
     t_norm = t.replace('OESTE', 'W').replace('PONIENTE', 'W').replace('ORIENTE', 'E').replace('ESTE', 'E').replace('NORTE', 'N').replace('SUR', 'S')
     match_r = re.search(r'([NS])\s*(\d+)[°\s]*(\d+)[\'\s]*(\d+(?:\.\d+)?)?[\"”\s]*([EW])', t_norm)
     if match_r:
@@ -73,7 +71,7 @@ def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
         return math.radians(ang)
     return ultimo_rad
 
-# --- 3. GENERADOR DE DXF (DISEÑO INDUSTRIAL) ---
+# --- 3. GENERADOR DE DXF ---
 def crear_dxf_integral(datos):
     doc = ezdxf.new('R2010')
     doc.header['$INSUNITS'] = 6
@@ -105,7 +103,6 @@ def crear_dxf_integral(datos):
         if puntos_dwg[-1] != puntos_dwg[0]:
             msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1})
 
-    # --- FICHA TÉCNICA DINÁMICA ---
     max_x = max([p[0] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     max_y = max([p[1] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     x_ref, y_ref = max_x + 30, max_y + 15
@@ -113,19 +110,28 @@ def crear_dxf_integral(datos):
     msp.add_text("FICHA TECNICA - NORM.AI", dxfattribs={'height': 2.5, 'color': 2}).set_placement((x_ref, y_ref))
     y_ref -= 8
     
-    msp.add_text(f"PROPIETARIO: {sanitizar_texto(datos.get('propietario', 'Detectado en PDF'))}", dxfattribs={'height': 1.2}).set_placement((x_ref, y_ref))
+    msp.add_text(f"PROPIETARIO: {sanitizar_texto(datos.get('propietario', 'N/A'))}", dxfattribs={'height': 1.2}).set_placement((x_ref, y_ref))
     y_ref -= 5
-    msp.add_text(f"AREA CALCULADA: {calcular_area(puntos_dwg):,.2f} m2", dxfattribs={'height': 1.5, 'color': 4}).set_placement((x_ref, y_ref))
+    
+    # DATOS RESTAURADOS
+    colindantes = datos.get('colindantes', [])
+    msp.add_text("COLINDANTES:", dxfattribs={'height': 1.2, 'color': 1}).set_placement((x_ref, y_ref))
+    for col in colindantes:
+        y_ref -= 2.0
+        msp.add_text(f"- {sanitizar_texto(col)}", dxfattribs={'height': 0.8}).set_placement((x_ref + 2, y_ref))
+    
+    y_ref -= 4
+    area_calc = calcular_area(puntos_dwg)
+    msp.add_text(f"AREA CALCULADA CAD: {area_calc:,.2f} m2", dxfattribs={'height': 1.5, 'color': 4}).set_placement((x_ref, y_ref))
     y_ref -= 10
 
-    # Columnas de Rumbos (Soporte para 76 tramos)
     col_x = x_ref
     for i, t in enumerate(tramos):
         linea = f"E{i+1}: {t.get('rumbo_limpio')} | {t.get('distancia')}m"
         msp.add_text(linea, dxfattribs={'height': 0.8}).set_placement((col_x, y_ref))
         y_ref -= 1.8
         if y_ref < (max_y - 350): 
-            y_ref = max_y - 25
+            y_ref = max_y - 50 # Ajuste para no pisar colindantes
             col_x += 65
 
     temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Final_{int(time.time())}.dxf")
@@ -136,9 +142,9 @@ def crear_dxf_integral(datos):
 archivo = st.file_uploader("Sube el PDF de Altos de Metrópoli", type=["pdf"])
 
 if archivo:
-    if st.button("🚀 Extraer 76 Tramos y Generar Plano"):
+    if st.button("🚀 Forzar Extracción Real (Sin Resúmenes)"):
         try:
-            status = st.status("Auditoría técnica en curso... No omitiremos ningún tramo.")
+            status = st.status("Leyendo 19 páginas. Obligando al sistema a transcribir los 76 tramos reales...")
             doc_pdf = fitz.open(stream=archivo.read(), filetype="pdf")
             google_files = []
             for i in range(len(doc_pdf)):
@@ -152,35 +158,51 @@ if archivo:
             while any(f.state.name == "PROCESSING" for f in google_files):
                 time.sleep(1); google_files = [genai.get_file(f.name) for f in google_files]
 
+            # EL PROMPT A PRUEBA DE PEREZA
             prompt = """
-            Eres un experto en ingeniería legal. Analiza Altos de Metrópoli.
-            IMPORTANTE: La Porción 2 tiene exactamente 76 TRAMOS.
-            TU MISIÓN: Debes extraer la lista completa. No te detengas hasta llegar al tramo 76.
+            Eres un topógrafo experto. Analiza la REMEDICIÓN de 'Altos de Metrópoli' (Porción 2).
             
-            1. 'propietario': Nombre actual.
-            2. 'tramos': Lista del 1 al 76.
-               - 'rumbo_limpio': Azimut o Rumbo.
-               - 'distancia': Número (ignora puntos aislados, busca palabras como 'metros').
-            
-            JSON ESTRICTO:
+            MISIÓN CRÍTICA: El perímetro principal tiene EXACTAMENTE 76 TRAMOS. 
+            Debes leer todo el documento y extraer la verdad. 
+            REGLA DE ORO: NO resumas. NO uses puntos suspensivos. Escribe los 76 tramos reales.
+
+            Extrae y devuelve ESTRICTAMENTE este JSON:
             {
-              "propietario": "...",
+              "propietario": "Dueño actual",
+              "colindantes": ["Norte: ...", "Sur: ..."],
               "tramos": [
-                {"rumbo_limpio": "N 10° E", "distancia": 45.0},
-                ... (hasta el 76)
+                {"rumbo_limpio": "Azimut o Rumbo 1", "distancia": 10.50},
+                {"rumbo_limpio": "Azimut o Rumbo 2", "distancia": 25.00}
               ]
             }
+            Asegúrate de que el arreglo "tramos" tenga 76 elementos reales.
             """
+            
             response = model.generate_content([prompt] + google_files)
-            datos = json.loads(response.text[response.text.find('{'):response.text.rfind('}')+1])
+            text = response.text
+            
+            try:
+                if "```json" in text:
+                    clean_json = text.split("```json")[1].split("```")[0].strip()
+                elif "```" in text:
+                    clean_json = text.split("```")[1].split("```")[0].strip()
+                else:
+                    clean_json = text[text.find('{'):text.rfind('}')+1].strip()
+                datos = json.loads(clean_json)
+            except json.JSONDecodeError:
+                st.error("⚠️ Error de formato. Intenta de nuevo.")
+                st.stop()
             
             ruta = crear_dxf_integral(datos)
-            status.update(label=f"✅ Procesados {len(datos['tramos'])} tramos. Datos listos.", state="complete")
+            status.update(label=f"✅ ¡Completado! {len(datos.get('tramos', []))} tramos leídos.", state="complete")
             
             with open(ruta, "rb") as f:
                 st.download_button("💾 DESCARGAR DXF", f, file_name="NormAI_Metropoli_Auditoria.dxf")
             
-            for f in google_files: genai.delete_file(f.name)
+            for f in google_files: 
+                try: genai.delete_file(f.name)
+                except: pass
+                
         except Exception as e:
             st.error(f"Error: {e}")
 
