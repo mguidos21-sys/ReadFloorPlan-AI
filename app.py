@@ -89,7 +89,6 @@ def crear_dxf_integral(datos):
         if not isinstance(t, dict): continue
         dist = limpiar_numero(t.get('distancia'))
         
-        # Obtenemos rumbo limpio y el texto completo para detectar si era curva
         rumbo_limpio_txt = str(t.get('rumbo_limpio', ''))
         es_curva = t.get('es_curva', False)
         
@@ -99,30 +98,27 @@ def crear_dxf_integral(datos):
             next_x = round(current_x + math.cos(rad) * dist, 4)
             next_y = round(current_y + math.sin(rad) * dist, 4)
 
-            # ETIQUETAS VISUALES EN EL DIBUJO
             mid_x = (current_x + next_x) / 2
             mid_y = (current_y + next_y) / 2
             
-            # Si es curva, etiquetamos en verde en el dibujo
-            color_txt = 3 if es_curva else 3 # 3 = verde brillante en AutoCAD
+            # Ajuste de color dinámico
+            color_txt = 3 if es_curva else 7 
             msp.add_text(f"L{i+1}", dxfattribs={'height': 0.8, 'color': color_txt}).set_placement((mid_x + 0.3, mid_y + 0.3))
 
             current_x, current_y = next_x, next_y
             puntos_dwg.append((current_x, current_y))
             ultimo_rad = rad
 
-    # DIBUJAR COMO POLILÍNEA CONTINUA (Blanca por defecto, Roja si falla)
     tiene_error_cierre = False
     if len(puntos_dwg) > 1:
-        msp.add_lwpolyline(puntos_dwg, dxfattribs={'color': 7}) # Blanco
+        msp.add_lwpolyline(puntos_dwg, dxfattribs={'color': 7})
 
         if puntos_dwg[-1] != puntos_dwg[0]:
             dist_cierre = math.sqrt((puntos_dwg[-1][0])**2 + (puntos_dwg[-1][1])**2)
             if dist_cierre > 0.01:
-                msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1}) # Rojo
+                msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1})
                 tiene_error_cierre = True
 
-    # --- FICHA TÉCNICA (SIDEBAR) ---
     max_x = max([p[0] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     max_y = max([p[1] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     x_side = max_x + 15
@@ -147,7 +143,6 @@ def crear_dxf_integral(datos):
         y_ref -= 1.8
         msp.add_text(f"- {sanitizar_texto(col)}", dxfattribs={'height': 0.6}).set_placement((x_side + 2, y_ref))
 
-    # --- CUADRO DE RUMBOS (CON DETECCIÓN DE CURVA) ---
     y_ref -= 8
     msp.add_text("CUADRO DE RUMBOS Y DISTANCIAS", dxfattribs={'height': 1.0, 'color': 4}).set_placement((x_side, y_ref))
     y_ref -= 2.0
@@ -164,12 +159,10 @@ def crear_dxf_integral(datos):
         r_val = sanitizar_texto(t.get('rumbo_limpio', t.get('rumbo_texto', '')))
         es_curva = t.get('es_curva', False)
         
-        col_fila = 3 if es_curva else 7 # Verde si es curva, blanco si no
+        col_fila = 3 if es_curva else 7
         
-        # Recortar texto largo pero añadir advertencia de curva
         if es_curva:
-            # En la tabla, simplificamos el rumbo y añadimos el aviso
-            r_val = r_val.split('°')[0] + "..." # simplificamos
+            r_val = r_val.split('°')[0] + "..."
             tiene_alguna_curva = True
             msp.add_text(f"L{i+1}", dxfattribs={'height': 0.5, 'color': col_fila}).set_placement((x_side + 2, y_ref))
             msp.add_text(f"{r_val} [CURVA]", dxfattribs={'height': 0.5, 'color': col_fila}).set_placement((x_side + 10, y_ref))
@@ -182,10 +175,10 @@ def crear_dxf_integral(datos):
             
         y_ref -= 1.3
 
-    # LEYENDAS ESPECIALES AL FINAL
+    # Emojis eliminados para evitar corrupción en AutoCAD
     if tiene_alguna_curva:
         y_ref -= 4
-        msp.add_text("⚠️ AVISO DE GEOMETRIA (Verde):", dxfattribs={'height': 0.8, 'color': 3}).set_placement((x_side, y_ref))
+        msp.add_text("AVISO DE GEOMETRIA (Verde):", dxfattribs={'height': 0.8, 'color': 3}).set_placement((x_side, y_ref))
         y_ref -= 1.5
         msp.add_text("Los segmentos marcados como [CURVA] se han dibujado rectos", dxfattribs={'height': 0.5, 'color': 7}).set_placement((x_side + 2, y_ref))
         y_ref -= 1.0
@@ -195,13 +188,13 @@ def crear_dxf_integral(datos):
 
     if tiene_error_cierre:
         y_ref -= 5
-        msp.add_text("🛑 NOTA DE CIERRE TOPOGRAFICO (Rojo):", dxfattribs={'height': 0.8, 'color': 1}).set_placement((x_side, y_ref))
+        msp.add_text("NOTA DE CIERRE TOPOGRAFICO (Rojo):", dxfattribs={'height': 0.8, 'color': 1}).set_placement((x_side, y_ref))
         y_ref -= 1.5
         msp.add_text("La linea roja indica el error de cierre matemático,", dxfattribs={'height': 0.5, 'color': 7}).set_placement((x_side + 2, y_ref))
         y_ref -= 1.0
         msp.add_text("derivado de las discrepancias en los datos originales de la escritura.", dxfattribs={'height': 0.5, 'color': 7}).set_placement((x_side + 2, y_ref))
         y_ref -= 1.0
-        msp.add_text("No es un error de generación del sistema Norm.AI.", dxfattribs={'height': 0.5, 'color': 7}).set_placement((x_side + 2, y_ref))
+        msp.add_text("No es un error de generacion del sistema Norm.AI.", dxfattribs={'height': 0.5, 'color': 7}).set_placement((x_side + 2, y_ref))
 
     temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Expediente_{int(time.time())}.dxf")
     doc.saveas(temp_path)
@@ -253,7 +246,6 @@ if archivo:
             response = model.generate_content([prompt] + google_files)
             text = response.text
             
-            # Limpieza robusta del JSON
             try:
                 if "```json" in text:
                     clean_json = text.split("```json")[1].split("```")[0].strip()
@@ -270,21 +262,16 @@ if archivo:
 
             ruta_dxf = crear_dxf_integral(datos)
 
-            # --- EL CERROJO COMERCIAL: Borrado instantáneo del servidor ---
             for f in google_files: 
                 try: genai.delete_file(f.name)
-                except Exception: pass # si ya se borró, ignorar
-            # -------------------------------------------------------------
+                except Exception: pass
 
             status.update(label="✅ Expediente Generado y Datos Destruidos del Servidor", state="complete")
             with open(ruta_dxf, "rb") as f:
                 st.download_button("💾 DESCARGAR DXF (Asistido)", f, file_name="Plano_NormAI_Final.dxf")
-            
-            # Borrado del temporal local ( DXF ) tras unos segundos
-            # os.remove(ruta_dxf) # Opcional si el hosting borra temporales rápido
 
         except Exception as e:
             st.error(f"Error: {e}")
 
 st.divider()
-st.caption(f"Norm.AI | Arquitectura & Tecnología | Miguel Guidos")
+st.caption(f"Norm.AI | Arquitectura & Tecnología | Arq. Miguel Guidos")
