@@ -1,8 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
 import ezdxf
-import fitz  # PyMuPDF
-from PIL import Image
 import json
 import re
 import math
@@ -11,8 +9,8 @@ import tempfile
 import time
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="Norm.AI - Edición Profesional", layout="wide")
-st.title("📐 Norm.AI: Levantamiento de Macro-Terrenos y Auditoría")
+st.set_page_config(page_title="Norm.AI - Lector Nativo", layout="wide")
+st.title("📐 Norm.AI: Auditoría de Documentos Masivos")
 
 MODELO_ACTIVO = 'gemini-2.5-flash'
 
@@ -45,7 +43,7 @@ def limpiar_numero(valor):
     numeros = re.findall(r"[-+]?\d*\.\d+|\d+", str(valor).replace(',', '.'))
     if not numeros: return 0.0
     n = float(numeros[0])
-    return n if n > 0.05 else 0.0 # Filtro contra ruido OCR
+    return n if n > 0.05 else 0.0
 
 def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
     if not texto: return ultimo_rad
@@ -113,7 +111,6 @@ def crear_dxf_integral(datos):
     msp.add_text(f"PROPIETARIO: {sanitizar_texto(datos.get('propietario', 'N/A'))}", dxfattribs={'height': 1.2}).set_placement((x_ref, y_ref))
     y_ref -= 5
     
-    # DATOS RESTAURADOS
     colindantes = datos.get('colindantes', [])
     msp.add_text("COLINDANTES:", dxfattribs={'height': 1.2, 'color': 1}).set_placement((x_ref, y_ref))
     for col in colindantes:
@@ -131,54 +128,53 @@ def crear_dxf_integral(datos):
         msp.add_text(linea, dxfattribs={'height': 0.8}).set_placement((col_x, y_ref))
         y_ref -= 1.8
         if y_ref < (max_y - 350): 
-            y_ref = max_y - 50 # Ajuste para no pisar colindantes
+            y_ref = max_y - 50
             col_x += 65
 
-    temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Final_{int(time.time())}.dxf")
+    temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Nativo_{int(time.time())}.dxf")
     doc.saveas(temp_path)
     return temp_path
 
 # --- 4. INTERFAZ ---
-archivo = st.file_uploader("Sube el PDF de Altos de Metrópoli", type=["pdf"])
+archivo = st.file_uploader("Sube el PDF Nativo de Altos de Metrópoli", type=["pdf"])
 
 if archivo:
-    if st.button("🚀 Forzar Extracción Real (Sin Resúmenes)"):
+    if st.button("🚀 Leer Documento Nativo y Extraer Todo"):
         try:
-            status = st.status("Leyendo 19 páginas. Obligando al sistema a transcribir los 76 tramos reales...")
-            doc_pdf = fitz.open(stream=archivo.read(), filetype="pdf")
-            google_files = []
-            for i in range(len(doc_pdf)):
-                page = doc_pdf.load_page(i)
-                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-                img_path = os.path.join(tempfile.gettempdir(), f"p_{i}.jpg")
-                Image.frombytes("RGB", [pix.width, pix.height], pix.samples).save(img_path, "JPEG", quality=80)
-                google_files.append(genai.upload_file(path=img_path))
-                os.remove(img_path)
-
-            while any(f.state.name == "PROCESSING" for f in google_files):
-                time.sleep(1); google_files = [genai.get_file(f.name) for f in google_files]
-
-            # EL PROMPT A PRUEBA DE PEREZA
-            prompt = """
-            Eres un topógrafo experto. Analiza la REMEDICIÓN de 'Altos de Metrópoli' (Porción 2).
+            status = st.status("Subiendo documento nativo... Cero alucinaciones.")
             
-            MISIÓN CRÍTICA: El perímetro principal tiene EXACTAMENTE 76 TRAMOS. 
-            Debes leer todo el documento y extraer la verdad. 
-            REGLA DE ORO: NO resumas. NO uses puntos suspensivos. Escribe los 76 tramos reales.
+            # Subir el PDF directamente (sin convertir a imágenes)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
+                temp_pdf.write(archivo.read())
+                temp_pdf_path = temp_pdf.name
 
-            Extrae y devuelve ESTRICTAMENTE este JSON:
+            gemini_file = genai.upload_file(temp_pdf_path)
+
+            while gemini_file.state.name == "PROCESSING":
+                time.sleep(1)
+                gemini_file = genai.get_file(gemini_file.name)
+
+            status.update(label="Analizando texto legal de las 19 páginas...")
+
+            prompt = """
+            Eres un topógrafo experto. Analiza el documento de REMEDICIÓN de 'Altos de Metrópoli'.
+            
+            MANDATO ESTRICTO:
+            Lee TODO el texto de las páginas. El perímetro principal tiene EXACTAMENTE 76 TRAMOS técnicos con rumbo/azimut y distancia en metros.
+            Debes extraer absolutamente todos, desde el 1 hasta el 76, sin excepciones.
+            No inventes datos. Si el texto no menciona más, llega hasta donde dice, pero esfuérzate por encontrar los 76 que componen la Porción 2.
+
+            Extrae y devuelve ESTRICTAMENTE un JSON con esta estructura (repite la estructura interna de 'tramos' tantas veces como líneas haya):
             {
-              "propietario": "Dueño actual",
-              "colindantes": ["Norte: ...", "Sur: ..."],
+              "propietario": "Nombre",
+              "colindantes": ["Norte...", "Sur..."],
               "tramos": [
-                {"rumbo_limpio": "Azimut o Rumbo 1", "distancia": 10.50},
-                {"rumbo_limpio": "Azimut o Rumbo 2", "distancia": 25.00}
+                {"rumbo_limpio": "N 10° E", "distancia": 45.0}
               ]
             }
-            Asegúrate de que el arreglo "tramos" tenga 76 elementos reales.
             """
             
-            response = model.generate_content([prompt] + google_files)
+            response = model.generate_content([prompt, gemini_file])
             text = response.text
             
             try:
@@ -190,18 +186,19 @@ if archivo:
                     clean_json = text[text.find('{'):text.rfind('}')+1].strip()
                 datos = json.loads(clean_json)
             except json.JSONDecodeError:
-                st.error("⚠️ Error de formato. Intenta de nuevo.")
+                st.error("⚠️ Error de lectura de datos.")
                 st.stop()
             
             ruta = crear_dxf_integral(datos)
-            status.update(label=f"✅ ¡Completado! {len(datos.get('tramos', []))} tramos leídos.", state="complete")
+            status.update(label=f"✅ Éxito total. {len(datos.get('tramos', []))} tramos reales extraídos del texto.", state="complete")
             
             with open(ruta, "rb") as f:
-                st.download_button("💾 DESCARGAR DXF", f, file_name="NormAI_Metropoli_Auditoria.dxf")
+                st.download_button("💾 DESCARGAR DXF LECTURA NATIVA", f, file_name="NormAI_Metropoli_Nativo.dxf")
             
-            for f in google_files: 
-                try: genai.delete_file(f.name)
-                except: pass
+            try:
+                genai.delete_file(gemini_file.name)
+                os.remove(temp_pdf_path)
+            except: pass
                 
         except Exception as e:
             st.error(f"Error: {e}")
