@@ -9,7 +9,8 @@ import tempfile
 import time
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="Norm.AI - Topografía Profesional", layout="wide")
+st.set_page_config(page_title="Procesamiento de escritura a poligonal", layout="wide")
+# TÍTULO ACTUALIZADO SEGÚN TU SOLICITUD
 st.title("📐 Procesamiento de escritura a poligonal")
 
 MODELO_ACTIVO = 'gemini-2.5-flash'
@@ -18,7 +19,7 @@ if "GOOGLE_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
     model = genai.GenerativeModel(model_name=MODELO_ACTIVO)
 else:
-    st.error("⚠️ Configura la API Key.")
+    st.error("⚠️ Configura la API Key en los secrets de Streamlit.")
     st.stop()
 
 # --- 2. FILTROS MATEMÁTICOS Y CÁLCULO DE ÁREA ---
@@ -43,7 +44,7 @@ def limpiar_numero_distancia(valor):
     numeros = re.findall(r"[-+]?\d*\.\d+|\d+", str(valor).replace(',', '.'))
     if not numeros: return 0.0
     n = float(numeros[0])
-    return n if n >= 0.05 else 0.0 # Ignora ruido menor a 5cm
+    return n if n >= 0.05 else 0.0
 
 def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
     if not texto: return ultimo_rad
@@ -71,7 +72,7 @@ def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
         return math.radians(ang)
     return ultimo_rad
 
-# --- 3. GENERADOR DE DXF (DISEÑO PROFESIONAL) ---
+# --- 3. GENERADOR DE DXF ---
 def crear_dxf_integral(datos):
     doc = ezdxf.new('R2010')
     doc.header['$INSUNITS'] = 6
@@ -103,16 +104,14 @@ def crear_dxf_integral(datos):
             puntos_dwg.append((current_x, current_y))
             ultimo_rad = rad
 
-    tiene_error_cierre = False
     if len(puntos_dwg) > 1:
         msp.add_lwpolyline(puntos_dwg, dxfattribs={'color': 7})
         if puntos_dwg[-1] != puntos_dwg[0]:
             dist_cierre = math.sqrt((puntos_dwg[-1][0])**2 + (puntos_dwg[-1][1])**2)
             if dist_cierre > 0.1: 
                 msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1})
-                tiene_error_cierre = True
 
-    # --- FICHA TÉCNICA (RESTAURADA) ---
+    # --- FICHA TÉCNICA ---
     max_x = max([p[0] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     max_y = max([p[1] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     x_side = max_x + 40
@@ -147,7 +146,7 @@ def crear_dxf_integral(datos):
     queb = str(datos.get('quebradas', 'No menciona'))
     msp.add_text(f"CUERPOS DE AGUA: {sanitizar_texto(queb)}", dxfattribs={'height': 0.8, 'color': 8}).set_placement((x_side + 2, y_ref))
 
-    # --- CUADRO TÉCNICO (COLUMNAS MÚLTIPLES) ---
+    # --- CUADRO TÉCNICO ---
     y_ref -= 15
     msp.add_text("CUADRO DE RUMBOS Y DISTANCIAS", dxfattribs={'height': 2.0, 'color': 4}).set_placement((x_side, y_ref))
     y_ref -= 5.0
@@ -184,7 +183,6 @@ def crear_dxf_integral(datos):
             y_ref = max_y - 30 
             current_col_x += column_width 
             
-            # Repetir cabecera en nueva columna
             msp.add_text("Est", dxfattribs={'height': header_height, 'color': 7}).set_placement((current_col_x + 2, y_ref))
             msp.add_text("Rumbo/Azimut", dxfattribs={'height': header_height, 'color': 7}).set_placement((current_col_x + 10, y_ref))
             msp.add_text("Dist (m)", dxfattribs={'height': header_height, 'color': 7}).set_placement((current_col_x + 40, y_ref))
@@ -194,17 +192,17 @@ def crear_dxf_integral(datos):
         y_ref -= 6
         msp.add_text("AVISO GEOMETRIA (Verde): Tramos curvos dibujados rectos.", dxfattribs={'height': 1.0, 'color': 3}).set_placement((x_side, y_ref))
 
-    temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_MacroExpediente_{int(time.time())}.dxf")
+    temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Expediente_{int(time.time())}.dxf")
     doc.saveas(temp_path)
     return temp_path
 
 # --- 4. INTERFAZ ---
-archivo = st.file_uploader("Sube el PDF", type=["pdf"])
+archivo = st.file_uploader("Sube el PDF de la Escritura", type=["pdf"])
 
 if archivo:
-    if st.button("🚀 Extraer Datos"):
+    if st.button("🚀 Extraer Datos y Trazar Poligonal"):
         try:
-            status = st.status("Leyendo documento nativo y forzando extracción total...", expanded=True)
+            status = st.status("Analizando documento nativo...", expanded=True)
             
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
                 temp_pdf.write(archivo.read())
@@ -217,12 +215,12 @@ if archivo:
                 gemini_file = genai.get_file(gemini_file.name)
 
             prompt = """
-            Eres un ingeniero topógrafo salvadoreño. Analiza la REMEDICIÓN de 'Altos de Metrópoli' (Porción 2).
+            Eres un ingeniero topógrafo salvadoreño. Analiza el documento legal adjunto.
             
-            INSTRUCCIONES ESTRICTAS:
-            1. Extrae el propietario, los colindantes, las servidumbres y las quebradas.
-            2. El perímetro principal tiene EXACTAMENTE 76 TRAMOS. Debes extraerlos TODOS.
-            3. NO inventes datos. Extrae los rumbos/azimuts y distancias reales tal como están escritos en el texto.
+            INSTRUCCIONES:
+            1. Extrae el propietario actual, los colindantes, las servidumbres y las quebradas.
+            2. Extrae TODOS LOS TRAMOS TÉCNICOS (rumbos/azimuts y distancias) del perímetro.
+            3. NO inventes datos. Extrae la información real tal como está escrita.
             
             Responde ÚNICAMENTE con este formato JSON:
             {
@@ -231,11 +229,9 @@ if archivo:
               "servidumbres": "Describir si hay",
               "quebradas": "Describir si hay",
               "tramos": [
-                {"etiqueta": "E1", "rumbo_limpio": "N 10° 15' 20\" E", "distancia": 45.00, "es_curva": false},
-                {"etiqueta": "E2", "rumbo_limpio": "S 20° 00' 00\" W", "distancia": 12.30, "es_curva": true}
+                {"etiqueta": "E1", "rumbo_limpio": "N 10° 15' 20\" E", "distancia": 45.00, "es_curva": false}
               ]
             }
-            IMPORTANTE: El arreglo "tramos" DEBE contener la lista completa descrita en el documento. Revisa tu trabajo antes de terminar.
             """
             
             response = model.generate_content([prompt, gemini_file])
@@ -257,7 +253,7 @@ if archivo:
             status.update(label=f"✅ Datos recuperados. {len(datos.get('tramos', []))} tramos extraídos.", state="complete")
             
             with open(ruta, "rb") as f:
-                st.download_button("💾 DESCARGAR DXF PROFESIONAL", f, file_name="NormAI_Metropoli_Restaurado.dxf")
+                st.download_button("💾 DESCARGAR DXF PROFESIONAL", f, file_name="Plano_Generado_NormAI.dxf")
             
             try:
                 genai.delete_file(gemini_file.name)
@@ -268,4 +264,5 @@ if archivo:
             st.error(f"Error: {e}")
 
 st.divider()
-st.caption("Norm.AI | Miguel Guidos - Tecnología de Precisión")
+# CAPCIÓN ACTUALIZADA CON TU NOMBRE Y TÍTULO
+st.caption("Norm.AI | Tecnología de Precisión | Arq. Miguel Guidos")
