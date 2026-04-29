@@ -9,8 +9,8 @@ import tempfile
 import time
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="Norm.AI - Lector Nativo", layout="wide")
-st.title("📐 Norm.AI: Auditoría de Documentos Masivos")
+st.set_page_config(page_title="Norm.AI - Topografía Profesional", layout="wide")
+st.title("📐 Norm.AI: Procesamiento de Macro-Escrituras y Cierre")
 
 MODELO_ACTIVO = 'gemini-2.5-flash'
 
@@ -21,7 +21,7 @@ else:
     st.error("⚠️ Configura la API Key.")
     st.stop()
 
-# --- 2. FILTROS MATEMÁTICOS ---
+# --- 2. FILTROS MATEMÁTICOS Y CÁLCULO DE ÁREA ---
 def calcular_area(puntos):
     n = len(puntos)
     if n < 3: return 0.0
@@ -38,17 +38,18 @@ def sanitizar_texto(texto):
     t = re.sub(r'[^\x20-\x7E\xA0-\xFF]', '', t)
     return t
 
-def limpiar_numero(valor):
+def limpiar_numero_distancia(valor):
     if valor is None: return 0.0
     numeros = re.findall(r"[-+]?\d*\.\d+|\d+", str(valor).replace(',', '.'))
     if not numeros: return 0.0
     n = float(numeros[0])
-    return n if n > 0.05 else 0.0
+    return n if n >= 0.05 else 0.0 # Ignora ruido menor a 5cm
 
 def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
     if not texto: return ultimo_rad
     t = str(texto).upper().strip()
     
+    # 1. Azimut
     match_az = re.search(r'(\d+)\s*[°º]\s*(\d+)\s*[\'’]\s*(\d+(?:\.\d+)?)?\s*["”]', t)
     if match_az and not any(x in t for x in ['N', 'S', 'E', 'W', 'O']):
         g, m, s = match_az.groups()
@@ -56,6 +57,7 @@ def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
         dec = float(g) + float(m)/60 + seg/3600
         return math.radians(90 - dec)
 
+    # 2. Rumbo
     t_norm = t.replace('OESTE', 'W').replace('PONIENTE', 'W').replace('ORIENTE', 'E').replace('ESTE', 'E').replace('NORTE', 'N').replace('SUR', 'S')
     match_r = re.search(r'([NS])\s*(\d+)[°\s]*(\d+)[\'\s]*(\d+(?:\.\d+)?)?[\"”\s]*([EW])', t_norm)
     if match_r:
@@ -69,7 +71,7 @@ def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
         return math.radians(ang)
     return ultimo_rad
 
-# --- 3. GENERADOR DE DXF ---
+# --- 3. GENERADOR DE DXF (DISEÑO PROFESIONAL) ---
 def crear_dxf_integral(datos):
     doc = ezdxf.new('R2010')
     doc.header['$INSUNITS'] = 6
@@ -81,69 +83,129 @@ def crear_dxf_integral(datos):
 
     tramos = datos.get('tramos', [])
     for i, t in enumerate(tramos):
-        dist = limpiar_numero(t.get('distancia'))
-        r_txt = t.get('rumbo_limpio', '')
+        dist = limpiar_numero_distancia(t.get('distancia'))
+        r_txt = str(t.get('rumbo_limpio', ''))
+        es_curva = t.get('es_curva', False)
         rad = interpretar_rumbo_o_azimut(r_txt, ultimo_rad)
 
         if dist > 0:
             next_x = round(current_x + math.cos(rad) * dist, 4)
             next_y = round(current_y + math.sin(rad) * dist, 4)
+
+            mid_x = (current_x + next_x) / 2
+            mid_y = (current_y + next_y) / 2
             
-            mid_x, mid_y = (current_x + next_x)/2, (current_y + next_y)/2
-            msp.add_text(f"E{i+1}", dxfattribs={'height': 1.5, 'color': 3}).set_placement((mid_x + 0.5, mid_y + 0.5))
+            color_txt = 3 if es_curva else 7 
+            label = sanitizar_texto(t.get('etiqueta', f"E{i+1}"))
+            msp.add_text(label, dxfattribs={'height': 1.0, 'color': color_txt}).set_placement((mid_x + 0.3, mid_y + 0.3))
 
             current_x, current_y = next_x, next_y
             puntos_dwg.append((current_x, current_y))
             ultimo_rad = rad
 
+    tiene_error_cierre = False
     if len(puntos_dwg) > 1:
         msp.add_lwpolyline(puntos_dwg, dxfattribs={'color': 7})
         if puntos_dwg[-1] != puntos_dwg[0]:
-            msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1})
+            dist_cierre = math.sqrt((puntos_dwg[-1][0])**2 + (puntos_dwg[-1][1])**2)
+            if dist_cierre > 0.1: 
+                msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1})
+                tiene_error_cierre = True
 
+    # --- FICHA TÉCNICA (RESTAURADA) ---
     max_x = max([p[0] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     max_y = max([p[1] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
-    x_ref, y_ref = max_x + 30, max_y + 15
+    x_side = max_x + 40
+    y_ref = max_y if max_y > 50 else 50
 
-    msp.add_text("FICHA TECNICA - NORM.AI", dxfattribs={'height': 2.5, 'color': 2}).set_placement((x_ref, y_ref))
+    msp.add_text("FICHA TECNICA - NORM.AI", dxfattribs={'height': 2.5, 'color': 2}).set_placement((x_side, y_ref))
     y_ref -= 8
     
-    msp.add_text(f"PROPIETARIO: {sanitizar_texto(datos.get('propietario', 'N/A'))}", dxfattribs={'height': 1.2}).set_placement((x_ref, y_ref))
-    y_ref -= 5
+    msp.add_text("DATOS GENERALES:", dxfattribs={'height': 1.8, 'color': 1}).set_placement((x_side, y_ref))
+    y_ref -= 5.0
     
-    colindantes = datos.get('colindantes', [])
-    msp.add_text("COLINDANTES:", dxfattribs={'height': 1.2, 'color': 1}).set_placement((x_ref, y_ref))
-    for col in colindantes:
-        y_ref -= 2.0
-        msp.add_text(f"- {sanitizar_texto(col)}", dxfattribs={'height': 0.8}).set_placement((x_ref + 2, y_ref))
+    prop_txt = sanitizar_texto(datos.get('propietario', 'N/A'))
+    msp.add_text(f"PROPIETARIO ACTUAL: {prop_txt}", dxfattribs={'height': 1.0, 'color': 5}).set_placement((x_side + 2, y_ref))
     
-    y_ref -= 4
+    y_ref -= 4.0
     area_calc = calcular_area(puntos_dwg)
-    msp.add_text(f"AREA CALCULADA CAD: {area_calc:,.2f} m2", dxfattribs={'height': 1.5, 'color': 4}).set_placement((x_ref, y_ref))
-    y_ref -= 10
+    msp.add_text(f"AREA CALCULADA CAD: {area_calc:,.2f} m2", dxfattribs={'height': 1.2, 'color': 6}).set_placement((x_side + 2, y_ref))
 
-    col_x = x_ref
+    y_ref -= 6
+    msp.add_text("COLINDANTES:", dxfattribs={'height': 1.8, 'color': 1}).set_placement((x_side, y_ref))
+    colindantes = datos.get('colindantes', [])
+    for col in colindantes:
+        y_ref -= 2.5
+        msp.add_text(f"- {sanitizar_texto(col)}", dxfattribs={'height': 0.8, 'color': 1}).set_placement((x_side + 2, y_ref))
+    
+    y_ref -= 8
+    msp.add_text("NOTAS Y RESTRICCIONES:", dxfattribs={'height': 1.8, 'color': 3}).set_placement((x_side, y_ref))
+    y_ref -= 4.0
+    serv = str(datos.get('servidumbres', 'Ninguna mencionada'))
+    msp.add_text(f"SERVIDUMBRES: {sanitizar_texto(serv)}", dxfattribs={'height': 0.8, 'color': 4}).set_placement((x_side + 2, y_ref))
+    y_ref -= 2.5
+    queb = str(datos.get('quebradas', 'No menciona'))
+    msp.add_text(f"CUERPOS DE AGUA: {sanitizar_texto(queb)}", dxfattribs={'height': 0.8, 'color': 8}).set_placement((x_side + 2, y_ref))
+
+    # --- CUADRO TÉCNICO (COLUMNAS MÚLTIPLES) ---
+    y_ref -= 15
+    msp.add_text("CUADRO DE RUMBOS Y DISTANCIAS", dxfattribs={'height': 2.0, 'color': 4}).set_placement((x_side, y_ref))
+    y_ref -= 5.0
+    
+    header_height = 0.8
+    msp.add_text("Est", dxfattribs={'height': header_height, 'color': 7}).set_placement((x_side + 2, y_ref))
+    msp.add_text("Rumbo/Azimut", dxfattribs={'height': header_height, 'color': 7}).set_placement((x_side + 10, y_ref))
+    msp.add_text("Dist (m)", dxfattribs={'height': header_height, 'color': 7}).set_placement((x_side + 40, y_ref))
+    y_ref -= 3.0
+
+    tiene_alguna_curva = False
+    data_height = 0.6
+    column_width = 50
+    current_col_x = x_side
+
     for i, t in enumerate(tramos):
-        linea = f"E{i+1}: {t.get('rumbo_limpio')} | {t.get('distancia')}m"
-        msp.add_text(linea, dxfattribs={'height': 0.8}).set_placement((col_x, y_ref))
-        y_ref -= 1.8
-        if y_ref < (max_y - 350): 
-            y_ref = max_y - 50
-            col_x += 65
+        dist = limpiar_numero_distancia(t.get('distancia'))
+        r_val = sanitizar_texto(t.get('rumbo_limpio', ''))
+        label = sanitizar_texto(t.get('etiqueta', f"E{i+1}"))
+        es_curva = t.get('es_curva', False)
+        
+        col_fila = 3 if es_curva else 7
+        if es_curva: tiene_alguna_curva = True
+            
+        if len(r_val) > 28: r_val = r_val[:25] + "..."
+            
+        msp.add_text(f"{label}", dxfattribs={'height': data_height, 'color': col_fila}).set_placement((current_col_x + 2, y_ref))
+        msp.add_text(r_val, dxfattribs={'height': data_height, 'color': col_fila}).set_placement((current_col_x + 10, y_ref))
+        msp.add_text(f"{dist:.2f}", dxfattribs={'height': data_height, 'color': col_fila}).set_placement((current_col_x + 40, y_ref))
+        
+        y_ref -= 1.2
+        
+        if y_ref < (max_y - 250):
+            y_ref = max_y - 30 
+            current_col_x += column_width 
+            
+            # Repetir cabecera en nueva columna
+            msp.add_text("Est", dxfattribs={'height': header_height, 'color': 7}).set_placement((current_col_x + 2, y_ref))
+            msp.add_text("Rumbo/Azimut", dxfattribs={'height': header_height, 'color': 7}).set_placement((current_col_x + 10, y_ref))
+            msp.add_text("Dist (m)", dxfattribs={'height': header_height, 'color': 7}).set_placement((current_col_x + 40, y_ref))
+            y_ref -= 3.0
 
-    temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Nativo_{int(time.time())}.dxf")
+    if tiene_alguna_curva:
+        y_ref -= 6
+        msp.add_text("AVISO GEOMETRIA (Verde): Tramos curvos dibujados rectos.", dxfattribs={'height': 1.0, 'color': 3}).set_placement((x_side, y_ref))
+
+    temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_MacroExpediente_{int(time.time())}.dxf")
     doc.saveas(temp_path)
     return temp_path
 
 # --- 4. INTERFAZ ---
-archivo = st.file_uploader("Sube el PDF Nativo de Altos de Metrópoli", type=["pdf"])
+archivo = st.file_uploader("Sube el PDF de Altos de Metrópoli", type=["pdf"])
 
 if archivo:
-    if st.button("🚀 Leer Documento Nativo y Extraer Todo"):
+    if st.button("🚀 Extraer Datos y 76 Tramos (Estricto)"):
         try:
-            status = st.status("Subiendo documento nativo... Cero alucinaciones.")
+            status = st.status("Leyendo documento nativo y forzando extracción total...", expanded=True)
             
-            # Subir el PDF directamente (sin convertir a imágenes)
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
                 temp_pdf.write(archivo.read())
                 temp_pdf_path = temp_pdf.name
@@ -154,24 +216,26 @@ if archivo:
                 time.sleep(1)
                 gemini_file = genai.get_file(gemini_file.name)
 
-            status.update(label="Analizando texto legal de las 19 páginas...")
-
             prompt = """
-            Eres un topógrafo experto. Analiza el documento de REMEDICIÓN de 'Altos de Metrópoli'.
+            Eres un ingeniero topógrafo salvadoreño. Analiza la REMEDICIÓN de 'Altos de Metrópoli' (Porción 2).
             
-            MANDATO ESTRICTO:
-            Lee TODO el texto de las páginas. El perímetro principal tiene EXACTAMENTE 76 TRAMOS técnicos con rumbo/azimut y distancia en metros.
-            Debes extraer absolutamente todos, desde el 1 hasta el 76, sin excepciones.
-            No inventes datos. Si el texto no menciona más, llega hasta donde dice, pero esfuérzate por encontrar los 76 que componen la Porción 2.
-
-            Extrae y devuelve ESTRICTAMENTE un JSON con esta estructura (repite la estructura interna de 'tramos' tantas veces como líneas haya):
+            INSTRUCCIONES ESTRICTAS:
+            1. Extrae el propietario, los colindantes, las servidumbres y las quebradas.
+            2. El perímetro principal tiene EXACTAMENTE 76 TRAMOS. Debes extraerlos TODOS.
+            3. NO inventes datos. Extrae los rumbos/azimuts y distancias reales tal como están escritos en el texto.
+            
+            Responde ÚNICAMENTE con este formato JSON:
             {
-              "propietario": "Nombre",
-              "colindantes": ["Norte...", "Sur..."],
+              "propietario": "Nombre completo",
+              "colindantes": ["Norte: ...", "Sur: ...", "Oriente: ...", "Poniente: ..."],
+              "servidumbres": "Describir si hay",
+              "quebradas": "Describir si hay",
               "tramos": [
-                {"rumbo_limpio": "N 10° E", "distancia": 45.0}
+                {"etiqueta": "E1", "rumbo_limpio": "N 10° 15' 20\" E", "distancia": 45.00, "es_curva": false},
+                {"etiqueta": "E2", "rumbo_limpio": "S 20° 00' 00\" W", "distancia": 12.30, "es_curva": true}
               ]
             }
+            IMPORTANTE: El arreglo "tramos" DEBE contener la lista completa descrita en el documento. Revisa tu trabajo antes de terminar.
             """
             
             response = model.generate_content([prompt, gemini_file])
@@ -190,10 +254,10 @@ if archivo:
                 st.stop()
             
             ruta = crear_dxf_integral(datos)
-            status.update(label=f"✅ Éxito total. {len(datos.get('tramos', []))} tramos reales extraídos del texto.", state="complete")
+            status.update(label=f"✅ Datos recuperados. {len(datos.get('tramos', []))} tramos extraídos.", state="complete")
             
             with open(ruta, "rb") as f:
-                st.download_button("💾 DESCARGAR DXF LECTURA NATIVA", f, file_name="NormAI_Metropoli_Nativo.dxf")
+                st.download_button("💾 DESCARGAR DXF PROFESIONAL", f, file_name="NormAI_Metropoli_Restaurado.dxf")
             
             try:
                 genai.delete_file(gemini_file.name)
