@@ -10,7 +10,6 @@ import time
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Procesamiento de escritura a poligonal", layout="wide")
-# TÍTULO ACTUALIZADO SEGÚN TU SOLICITUD
 st.title("📐 Procesamiento de escritura a poligonal")
 
 MODELO_ACTIVO = 'gemini-2.5-flash'
@@ -50,17 +49,15 @@ def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
     if not texto: return ultimo_rad
     t = str(texto).upper().strip()
     
-    # 1. Azimut
-    match_az = re.search(r'(\d+)\s*[°º]\s*(\d+)\s*[\'’]\s*(\d+(?:\.\d+)?)?\s*["”]', t)
+    match_az = re.search(r'(\d+)\s*[°º]\s*(\d+)\s*[\'’]\s*(\d+(?:\.\d+)?)?\s*["”\'\s]*', t)
     if match_az and not any(x in t for x in ['N', 'S', 'E', 'W', 'O']):
         g, m, s = match_az.groups()
         seg = float(s) if s else 0.0
         dec = float(g) + float(m)/60 + seg/3600
         return math.radians(90 - dec)
 
-    # 2. Rumbo
     t_norm = t.replace('OESTE', 'W').replace('PONIENTE', 'W').replace('ORIENTE', 'E').replace('ESTE', 'E').replace('NORTE', 'N').replace('SUR', 'S')
-    match_r = re.search(r'([NS])\s*(\d+)[°\s]*(\d+)[\'\s]*(\d+(?:\.\d+)?)?[\"”\s]*([EW])', t_norm)
+    match_r = re.search(r'([NS])\s*(\d+)[°\s]*(\d+)[\'\s]*(\d+(?:\.\d+)?)?[\"”\'\s]*([EW])', t_norm)
     if match_r:
         ns, g, m, s, ew = match_r.groups()
         seg = float(s) if s else 0.0
@@ -111,7 +108,6 @@ def crear_dxf_integral(datos):
             if dist_cierre > 0.1: 
                 msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1})
 
-    # --- FICHA TÉCNICA ---
     max_x = max([p[0] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     max_y = max([p[1] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     x_side = max_x + 40
@@ -146,7 +142,6 @@ def crear_dxf_integral(datos):
     queb = str(datos.get('quebradas', 'No menciona'))
     msp.add_text(f"CUERPOS DE AGUA: {sanitizar_texto(queb)}", dxfattribs={'height': 0.8, 'color': 8}).set_placement((x_side + 2, y_ref))
 
-    # --- CUADRO TÉCNICO ---
     y_ref -= 15
     msp.add_text("CUADRO DE RUMBOS Y DISTANCIAS", dxfattribs={'height': 2.0, 'color': 4}).set_placement((x_side, y_ref))
     y_ref -= 5.0
@@ -197,7 +192,7 @@ def crear_dxf_integral(datos):
     return temp_path
 
 # --- 4. INTERFAZ ---
-archivo = st.file_uploader("Sube el PDF de la Escritura", type=["pdf"])
+archivo = st.file_uploader("Sube cualquier Escritura (PDF)", type=["pdf"])
 
 if archivo:
     if st.button("🚀 Extraer Datos y Trazar Poligonal"):
@@ -217,10 +212,15 @@ if archivo:
             prompt = """
             Eres un ingeniero topógrafo salvadoreño. Analiza el documento legal adjunto.
             
-            INSTRUCCIONES:
+            INSTRUCCIONES ESTRICTAS:
             1. Extrae el propietario actual, los colindantes, las servidumbres y las quebradas.
-            2. Extrae TODOS LOS TRAMOS TÉCNICOS (rumbos/azimuts y distancias) del perímetro.
+            2. Extrae TODOS LOS TRAMOS TÉCNICOS (rumbos/azimuts y distancias) del perímetro. No importa la cantidad, extrae la lista completa.
             3. NO inventes datos. Extrae la información real tal como está escrita.
+            
+            REGLA DE ORO PARA EL FORMATO:
+            NUNCA utilices el símbolo de comillas dobles (") para referirte a los segundos en los rumbos, ya que esto arruina la estructura del código. Si un rumbo tiene segundos, utiliza dos comillas simples ('') o ignora el símbolo.
+            Ejemplo CORRECTO: "N 10° 15' 20'' E"
+            Ejemplo INCORRECTO: "N 10° 15' 20" E"
             
             Responde ÚNICAMENTE con este formato JSON:
             {
@@ -229,7 +229,7 @@ if archivo:
               "servidumbres": "Describir si hay",
               "quebradas": "Describir si hay",
               "tramos": [
-                {"etiqueta": "E1", "rumbo_limpio": "N 10° 15' 20\" E", "distancia": 45.00, "es_curva": false}
+                {"etiqueta": "E1", "rumbo_limpio": "N 10° 15' 20'' E", "distancia": 45.00, "es_curva": false}
               ]
             }
             """
@@ -246,7 +246,7 @@ if archivo:
                     clean_json = text[text.find('{'):text.rfind('}')+1].strip()
                 datos = json.loads(clean_json)
             except json.JSONDecodeError:
-                st.error("⚠️ Error de lectura de datos.")
+                st.error("⚠️ Error de lectura de datos. La IA devolvió un formato ilegible.")
                 st.stop()
             
             ruta = crear_dxf_integral(datos)
@@ -264,5 +264,4 @@ if archivo:
             st.error(f"Error: {e}")
 
 st.divider()
-# CAPCIÓN ACTUALIZADA CON TU NOMBRE Y TÍTULO
 st.caption("Norm.AI | Tecnología de Precisión | Arq. Miguel Guidos")
