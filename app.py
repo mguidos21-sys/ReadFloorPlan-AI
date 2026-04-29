@@ -10,7 +10,7 @@ import time
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Norm.AI - Topografía Profesional", layout="wide")
-st.title("📐 Norm.AI: Procesamiento de Macro-Escrituras y Cierre")
+st.title("📐 Procesamiento de escritura a poligonal")
 
 MODELO_ACTIVO = 'gemini-2.5-flash'
 
@@ -199,10 +199,10 @@ def crear_dxf_integral(datos):
     return temp_path
 
 # --- 4. INTERFAZ ---
-archivo = st.file_uploader("Sube el PDF de Altos de Metrópoli", type=["pdf"])
+archivo = st.file_uploader("Sube el PDF", type=["pdf"])
 
 if archivo:
-    if st.button("🚀 Extraer Datos y 76 Tramos (Estricto)"):
+    if st.button("🚀 Extraer Datos"):
         try:
             status = st.status("Leyendo documento nativo y forzando extracción total...", expanded=True)
             
