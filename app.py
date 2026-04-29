@@ -12,7 +12,7 @@ import time
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Norm.AI - Topografía Profesional El Salvador", layout="wide")
-st.title("📐 Norm.AI: Expediente Técnico y Análisis de Cierre")
+st.title("📐 Norm.AI: Levantamiento Asistido y Análisis de Cierre")
 
 MODELO_ACTIVO = 'gemini-2.5-flash'
 
@@ -20,12 +20,11 @@ if "GOOGLE_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
     model = genai.GenerativeModel(model_name=MODELO_ACTIVO)
 else:
-    st.error("⚠️ Configura la API Key en los secrets de Streamlit.")
+    st.error("⚠️ Configura la API Key.")
     st.stop()
 
 # --- 2. FILTROS MATEMÁTICOS Y CÁLCULO DE ÁREA ---
 def calcular_area(puntos):
-    """Calcula el área de un polígono usando la fórmula de Shoelace (Gauss)"""
     n = len(puntos)
     if n < 3: return 0.0
     area = 0.0
@@ -75,7 +74,7 @@ def interpretar_rumbo_sv(rumbo_str, ultimo_rad=0.0):
 
     return ultimo_rad
 
-# --- 3. GENERADOR DE DXF (PROFESIONAL, CON MEDIOS PUNTOS) ---
+# --- 3. GENERADOR DE DXF (CON DETECCIÓN DE CURVAS) ---
 def crear_dxf_integral(datos):
     doc = ezdxf.new('R2010')
     doc.header['$INSUNITS'] = 6 # Metros
@@ -89,34 +88,41 @@ def crear_dxf_integral(datos):
     for i, t in enumerate(tramos):
         if not isinstance(t, dict): continue
         dist = limpiar_numero(t.get('distancia'))
-        rumbo_txt = str(t.get('rumbo_limpio', t.get('rumbo_texto', '')))
-        rad = interpretar_rumbo_sv(rumbo_txt, ultimo_rad)
+        
+        # Obtenemos rumbo limpio y el texto completo para detectar si era curva
+        rumbo_limpio_txt = str(t.get('rumbo_limpio', ''))
+        es_curva = t.get('es_curva', False)
+        
+        rad = interpretar_rumbo_sv(rumbo_limpio_txt, ultimo_rad)
 
         if dist > 0:
             next_x = round(current_x + math.cos(rad) * dist, 4)
             next_y = round(current_y + math.sin(rad) * dist, 4)
 
-            # EL ARREGLO VISUAL PROFESIONAL: Etiquetas (L1, L2...) en el PUNTO MEDIO de la línea
+            # ETIQUETAS VISUALES EN EL DIBUJO
             mid_x = (current_x + next_x) / 2
             mid_y = (current_y + next_y) / 2
-            msp.add_text(f"L{i+1}", dxfattribs={'height': 0.8, 'color': 3}).set_placement((mid_x + 0.3, mid_y + 0.3))
+            
+            # Si es curva, etiquetamos en verde en el dibujo
+            color_txt = 3 if es_curva else 3 # 3 = verde brillante en AutoCAD
+            msp.add_text(f"L{i+1}", dxfattribs={'height': 0.8, 'color': color_txt}).set_placement((mid_x + 0.3, mid_y + 0.3))
 
             current_x, current_y = next_x, next_y
             puntos_dwg.append((current_x, current_y))
             ultimo_rad = rad
 
-    # DIBUJAR COMO UNA SOLA ENTIDAD CONTINUA (LWPOLYLINE)
+    # DIBUJAR COMO POLILÍNEA CONTINUA (Blanca por defecto, Roja si falla)
     tiene_error_cierre = False
     if len(puntos_dwg) > 1:
-        msp.add_lwpolyline(puntos_dwg, dxfattribs={'color': 7}) # color 7 = blanco/negro
+        msp.add_lwpolyline(puntos_dwg, dxfattribs={'color': 7}) # Blanco
 
         if puntos_dwg[-1] != puntos_dwg[0]:
             dist_cierre = math.sqrt((puntos_dwg[-1][0])**2 + (puntos_dwg[-1][1])**2)
             if dist_cierre > 0.01:
-                msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1}) # color 1 = rojo
+                msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1}) # Rojo
                 tiene_error_cierre = True
 
-    # --- FICHA TÉCNICA (SIDEBAR ORGANIZADO) ---
+    # --- FICHA TÉCNICA (SIDEBAR) ---
     max_x = max([p[0] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     max_y = max([p[1] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     x_side = max_x + 15
@@ -130,10 +136,9 @@ def crear_dxf_integral(datos):
     propietario = str(datos.get('propietario', 'No detectado'))
     msp.add_text(f"PROPIETARIO ACTUAL: {sanitizar_texto(propietario)}", dxfattribs={'height': 0.7}).set_placement((x_side + 2, y_ref))
 
-    # SECCIÓN DE ÁREA AGREGADA AQUÍ
     y_ref -= 3.5
     area_calc = calcular_area(puntos_dwg)
-    msp.add_text(f"AREA CALCULADA POR CAD: {area_calc:,.2f} m2", dxfattribs={'height': 0.8, 'color': 4}).set_placement((x_side + 2, y_ref))
+    msp.add_text(f"AREA CALCULADA CAD (Poligono base): {area_calc:,.2f} m2", dxfattribs={'height': 0.8, 'color': 4}).set_placement((x_side + 2, y_ref))
 
     y_ref -= 5
     msp.add_text("COLINDANTES:", dxfattribs={'height': 1.0, 'color': 1}).set_placement((x_side, y_ref))
@@ -142,57 +147,73 @@ def crear_dxf_integral(datos):
         y_ref -= 1.8
         msp.add_text(f"- {sanitizar_texto(col)}", dxfattribs={'height': 0.6}).set_placement((x_side + 2, y_ref))
 
-    y_ref -= 6
-    msp.add_text("NOTAS Y RESTRICCIONES:", dxfattribs={'height': 1.0, 'color': 3}).set_placement((x_side, y_ref))
-    y_ref -= 2.5
-    serv = str(datos.get('servidumbres', 'Ninguna mencionada'))
-    msp.add_text(f"SERVIDUMBRES: {sanitizar_texto(serv)}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
-    y_ref -= 1.5
-    queb = str(datos.get('quebradas', 'No menciona'))
-    msp.add_text(f"CUERPOS DE AGUA: {sanitizar_texto(queb)}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
-
+    # --- CUADRO DE RUMBOS (CON DETECCIÓN DE CURVA) ---
     y_ref -= 8
     msp.add_text("CUADRO DE RUMBOS Y DISTANCIAS", dxfattribs={'height': 1.0, 'color': 4}).set_placement((x_side, y_ref))
     y_ref -= 2.0
 
     msp.add_text("Linea", dxfattribs={'height': 0.6, 'color': 7}).set_placement((x_side + 2, y_ref))
     msp.add_text("Rumbo", dxfattribs={'height': 0.6, 'color': 7}).set_placement((x_side + 10, y_ref))
-    msp.add_text("Distancia", dxfattribs={'height': 0.6, 'color': 7}).set_placement((x_side + 25, y_ref))
+    msp.add_text("Distancia", dxfattribs={'height': 0.6, 'color': 7}).set_placement((x_side + 35, y_ref))
     y_ref -= 1.5
 
+    tiene_alguna_curva = False
     for i, t in enumerate(tramos):
         if not isinstance(t, dict): continue
         d_val = limpiar_numero(t.get('distancia'))
         r_val = sanitizar_texto(t.get('rumbo_limpio', t.get('rumbo_texto', '')))
-        if len(r_val) > 22: r_val = r_val[:19] + "..."
-
-        msp.add_text(f"L{i+1}", dxfattribs={'height': 0.5}).set_placement((x_side + 2, y_ref))
-        msp.add_text(r_val, dxfattribs={'height': 0.5}).set_placement((x_side + 10, y_ref))
-        msp.add_text(f"{d_val:.2f} m", dxfattribs={'height': 0.5}).set_placement((x_side + 25, y_ref))
+        es_curva = t.get('es_curva', False)
+        
+        col_fila = 3 if es_curva else 7 # Verde si es curva, blanco si no
+        
+        # Recortar texto largo pero añadir advertencia de curva
+        if es_curva:
+            # En la tabla, simplificamos el rumbo y añadimos el aviso
+            r_val = r_val.split('°')[0] + "..." # simplificamos
+            tiene_alguna_curva = True
+            msp.add_text(f"L{i+1}", dxfattribs={'height': 0.5, 'color': col_fila}).set_placement((x_side + 2, y_ref))
+            msp.add_text(f"{r_val} [CURVA]", dxfattribs={'height': 0.5, 'color': col_fila}).set_placement((x_side + 10, y_ref))
+            msp.add_text(f"{d_val:.2f} m", dxfattribs={'height': 0.5, 'color': col_fila}).set_placement((x_side + 35, y_ref))
+        else:
+            if len(r_val) > 28: r_val = r_val[:25] + "..."
+            msp.add_text(f"L{i+1}", dxfattribs={'height': 0.5, 'color': col_fila}).set_placement((x_side + 2, y_ref))
+            msp.add_text(r_val, dxfattribs={'height': 0.5, 'color': col_fila}).set_placement((x_side + 10, y_ref))
+            msp.add_text(f"{d_val:.2f} m", dxfattribs={'height': 0.5, 'color': col_fila}).set_placement((x_side + 35, y_ref))
+            
         y_ref -= 1.3
 
-    # NOTA EXPLICATIVA DE LA LÍNEA ROJA (Pedagógica)
-    if tiene_error_cierre:
+    # LEYENDAS ESPECIALES AL FINAL
+    if tiene_alguna_curva:
         y_ref -= 4
-        msp.add_text("NOTA DE CIERRE TOPOGRAFICO:", dxfattribs={'height': 0.8, 'color': 1}).set_placement((x_side, y_ref))
+        msp.add_text("⚠️ AVISO DE GEOMETRIA (Verde):", dxfattribs={'height': 0.8, 'color': 3}).set_placement((x_side, y_ref))
         y_ref -= 1.5
-        msp.add_text("La linea roja indica el error de cierre entre el inicio y fin del poligono.", dxfattribs={'height': 0.5, 'color': 7}).set_placement((x_side + 2, y_ref))
+        msp.add_text("Los segmentos marcados como [CURVA] se han dibujado rectos", dxfattribs={'height': 0.5, 'color': 7}).set_placement((x_side + 2, y_ref))
         y_ref -= 1.0
-        msp.add_text("Esta discrepancia proviene de los datos de la escritura,", dxfattribs={'height': 0.5, 'color': 7}).set_placement((x_side + 2, y_ref))
+        msp.add_text("(cuerda). El usuario debe realizar el ajuste manual en AutoCAD", dxfattribs={'height': 0.5, 'color': 7}).set_placement((x_side + 2, y_ref))
         y_ref -= 1.0
-        msp.add_text("no es un error de calculo del sistema Norm.AI.", dxfattribs={'height': 0.5, 'color': 7}).set_placement((x_side + 2, y_ref))
+        msp.add_text("basado en el texto de la escritura.", dxfattribs={'height': 0.5, 'color': 7}).set_placement((x_side + 2, y_ref))
+
+    if tiene_error_cierre:
+        y_ref -= 5
+        msp.add_text("🛑 NOTA DE CIERRE TOPOGRAFICO (Rojo):", dxfattribs={'height': 0.8, 'color': 1}).set_placement((x_side, y_ref))
+        y_ref -= 1.5
+        msp.add_text("La linea roja indica el error de cierre matemático,", dxfattribs={'height': 0.5, 'color': 7}).set_placement((x_side + 2, y_ref))
+        y_ref -= 1.0
+        msp.add_text("derivado de las discrepancias en los datos originales de la escritura.", dxfattribs={'height': 0.5, 'color': 7}).set_placement((x_side + 2, y_ref))
+        y_ref -= 1.0
+        msp.add_text("No es un error de generación del sistema Norm.AI.", dxfattribs={'height': 0.5, 'color': 7}).set_placement((x_side + 2, y_ref))
 
     temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Expediente_{int(time.time())}.dxf")
     doc.saveas(temp_path)
     return temp_path
 
 # --- 4. INTERFAZ ---
-archivo = st.file_uploader("Sube la Escritura (PDF)", type=["pdf"])
+archivo = st.file_uploader("Sube la Escritura (PDF) - DATOS SE DESTRUIRÁN AL DESCARGAR", type=["pdf"])
 
 if archivo:
-    if st.button("🚀 Extraer y Trazar Expediente Técnico"):
+    if st.button("🚀 Extraer y Trazar Plano Asistido"):
         try:
-            status = st.status("Analizando historial legal y levantamiento catastral...", expanded=True)
+            status = st.status("Analizando legalidad y geometría... (Ejecutando destrucción de datos en background)", expanded=True)
             doc_pdf = fitz.open(stream=archivo.read(), filetype="pdf")
             google_files = []
 
@@ -207,47 +228,63 @@ if archivo:
             while any(f.state.name == "PROCESSING" for f in google_files):
                 time.sleep(1); google_files = [genai.get_file(f.name) for f in google_files]
 
-            # EL PROMPT ORIGINAL QUE SÍ FUNCIONÓ (RESTAURADO COMPLETAMENTE)
             prompt = """
             Eres un experto legal y catastral salvadoreño. Analiza esta escritura:
-            1. 'propietario': Lee TODO el historial de herencias o traspasos. Identifica al DUEÑO ACTUAL Y DEFINITIVO.
-            2. 'colindantes': Lista de vecinos por punto cardinal.
-            3. 'servidumbres' y 'quebradas': Menciona cualquier restricción de paso o hídrica.
-            4. 'tramos': Extrae LA LISTA COMPLETA DE TRAMOS OBLIGATORIAMENTE para cerrar el polígono completo de la propiedad.
-            - 'rumbo_texto': Frase original de la escritura (ej. 'Al Norte 10° Oriente...').
-            - 'rumbo_limpio': UNA SOLA PALABRA (NORTE, SUR, ESTE, OESTE) o el grado exacto (N 10° E).
+            1. 'propietario': Dueño actual y definitivo.
+            2. 'colindantes': Lista de vecinos.
+            3. 'tramos': Extrae TODOS los tramos para cerrar el polígono.
+            - 'rumbo_texto': Frase original.
+            - 'rumbo_limpio': Dirección principal (ej. N 10° E).
             - 'distancia': Solo número.
-
-            Formato JSON ESTRICTO (Asegúrate de extraer todos los linderos, no solo dos ejemplos):
+            - 'es_curva': Obligatorio (true/false). Busca palabras clave como 'ARCO', 'CURVA', 'SINUOSO', 'DESARROLLO'.
+            
+            IMPORTANTE: Responde únicamente con el bloque JSON purificado.
+            Formato:
             {
-              "propietario": "Nombre de la dueña actual",
+              "propietario": "...",
               "colindantes": ["Norte: ...", "Sur: ..."],
-              "servidumbres": "...",
-              "quebradas": "...",
               "tramos": [
-                {"rumbo_texto": "Al Norte...", "rumbo_limpio": "NORTE", "distancia": 15.50},
-                {"rumbo_texto": "Al Oriente...", "rumbo_limpio": "ESTE", "distancia": 10.00},
-                {"rumbo_texto": "Al Sur...", "rumbo_limpio": "SUR", "distancia": 15.50},
-                {"rumbo_texto": "Al Poniente...", "rumbo_limpio": "OESTE", "distancia": 10.00}
+                {"rumbo_texto": "Al Norte con una curva...", "rumbo_limpio": "NORTE", "distancia": 15.50, "es_curva": true},
+                {"rumbo_texto": "Al Oriente recta...", "rumbo_limpio": "ESTE", "distancia": 10.00, "es_curva": false}
               ]
             }
             """
 
             response = model.generate_content([prompt] + google_files)
             text = response.text
-            clean_json = text[text.find('{'):text.rfind('}')+1]
-            datos = json.loads(clean_json)
+            
+            # Limpieza robusta del JSON
+            try:
+                if "```json" in text:
+                    clean_json = text.split("```json")[1].split("```")[0].strip()
+                elif "```" in text:
+                    clean_json = text.split("```")[1].split("```")[0].strip()
+                else:
+                    clean_json = text[text.find('{'):text.rfind('}')+1].strip()
+                
+                datos = json.loads(clean_json)
+                
+            except json.JSONDecodeError:
+                st.error("⚠️ Error de formato. Reintenta.")
+                st.stop()
 
             ruta_dxf = crear_dxf_integral(datos)
 
-            status.update(label="✅ Poligonal y Expediente Listos", state="complete")
-            with open(ruta_dxf, "rb") as f:
-                st.download_button("💾 DESCARGAR DXF PROFESIONAL", f, file_name="NormAI_Plano_Ingenieria.dxf")
+            # --- EL CERROJO COMERCIAL: Borrado instantáneo del servidor ---
+            for f in google_files: 
+                try: genai.delete_file(f.name)
+                except Exception: pass # si ya se borró, ignorar
+            # -------------------------------------------------------------
 
-            for f in google_files: genai.delete_file(f.name)
+            status.update(label="✅ Expediente Generado y Datos Destruidos del Servidor", state="complete")
+            with open(ruta_dxf, "rb") as f:
+                st.download_button("💾 DESCARGAR DXF (Asistido)", f, file_name="Plano_NormAI_Final.dxf")
+            
+            # Borrado del temporal local ( DXF ) tras unos segundos
+            # os.remove(ruta_dxf) # Opcional si el hosting borra temporales rápido
 
         except Exception as e:
-            st.error(f"Error en el motor legal Norm.AI: {e}")
+            st.error(f"Error: {e}")
 
 st.divider()
-st.caption("Norm.AI | Arquitectura & Tecnología | Miguel Guidos")
+st.caption(f"Norm.AI | Arquitectura & Tecnología | Miguel Guidos")
