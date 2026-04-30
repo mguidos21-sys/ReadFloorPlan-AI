@@ -49,7 +49,7 @@ def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
     if not texto: return ultimo_rad
     t = str(texto).upper().strip()
     
-    # 1. Azimut
+    # 1. Azimut con grados
     match_az = re.search(r'(\d+)\s*[°º]\s*(\d+)\s*[\'’]\s*(\d+(?:\.\d+)?)?\s*["”\'\s]*', t)
     if match_az and not any(x in t for x in ['N', 'S', 'E', 'W', 'O']):
         g, m, s = match_az.groups()
@@ -57,8 +57,9 @@ def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
         dec = float(g) + float(m)/60 + seg/3600
         return math.radians(90 - dec)
 
-    # 2. Rumbo
     t_norm = t.replace('OESTE', 'W').replace('PONIENTE', 'W').replace('ORIENTE', 'E').replace('ESTE', 'E').replace('NORTE', 'N').replace('SUR', 'S')
+    
+    # 2. Rumbo con grados
     match_r = re.search(r'([NS])\s*(\d+)[°\s]*(\d+)[\'\s]*(\d+(?:\.\d+)?)?[\"”\'\s]*([EW])', t_norm)
     if match_r:
         ns, g, m, s, ew = match_r.groups()
@@ -69,6 +70,21 @@ def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
         elif ns == 'S' and ew == 'E': ang = 270 + dec
         elif ns == 'S' and ew == 'W': ang = 270 - dec
         return math.radians(ang)
+        
+    # 3. PLAN B: Direcciones Cardinales Puras (Para escrituras antiguas sin grados)
+    letras = [c for c in t_norm if c in ['N', 'S', 'E', 'W']]
+    if letras:
+        # Si solo menciona un punto cardinal
+        if all(c == 'N' for c in letras): return math.radians(90)
+        if all(c == 'S' for c in letras): return math.radians(270)
+        if all(c == 'E' for c in letras): return math.radians(0)
+        if all(c == 'W' for c in letras): return math.radians(180)
+        # Si menciona esquinas (ej. Nororiente)
+        if set(letras) == {'N', 'E'}: return math.radians(45)
+        if set(letras) == {'N', 'W'}: return math.radians(135)
+        if set(letras) == {'S', 'E'}: return math.radians(315)
+        if set(letras) == {'S', 'W'}: return math.radians(225)
+
     return ultimo_rad
 
 # --- 3. GENERADOR DE DXF ---
@@ -196,9 +212,7 @@ def crear_dxf_integral(datos):
     return temp_path
 
 # --- 4. INTERFAZ ---
-
-# Advertencia inyectada para los usuarios
-st.info("💡 **Nota de Uso:** El sistema está optimizado para procesar la poligonal de **un solo lote por documento**. Si subes una escritura con múltiples propiedades o lotes (ej. 'Primero', 'Segundo'), la IA graficará únicamente el perímetro del primer inmueble descrito.")
+st.info("💡 **Nota de Uso:** El sistema procesa el **primer lote** descrito. Si la escritura contiene descripciones antiguas (solo Norte, Sur, etc. sin grados), se generará un croquis ortogonal esquemático.")
 
 archivo = st.file_uploader("Sube el PDF de la Escritura", type=["pdf"])
 
@@ -221,24 +235,23 @@ if archivo:
             Eres un ingeniero topógrafo salvadoreño. Analiza la escritura o documento legal adjunto.
             
             INSTRUCCIONES ESTRICTAS:
-            1. Extrae el propietario, los colindantes, las servidumbres y las quebradas.
-            2. REGLA DE AISLAMIENTO (MÚLTIPLES LOTES): Si la escritura describe más de un lote o propiedad (por ejemplo, enumera un lote "PRIMERO", luego un "SEGUNDO", etc.), DEBES EXTRAER ÚNICAMENTE LOS TRAMOS DEL PRIMER LOTE. Ignora por completo los rumbos y distancias de cualquier lote secundario para evitar el cruce de datos.
-            3. Extrae TODOS LOS TRAMOS TÉCNICOS del perímetro del primer lote (o del único lote si solo hay uno). NO importa cuántos sean. Debes extraerlos TODOS sin omitir absolutamente ninguno de esa poligonal.
-            4. NO inventes datos. Extrae los rumbos/azimuts y distancias reales tal como están escritos en el texto.
-            5. REGLA DE FORMATO JSON: NUNCA uses comillas dobles (") dentro de los valores de rumbo para los segundos, usa dos comillas simples ('') o ignora el símbolo para no quebrar la estructura de datos.
+            1. Extrae el propietario, colindantes, servidumbres y quebradas.
+            2. REGLA DE AISLAMIENTO: Si hay varios lotes ("PRIMERO", "SEGUNDO"), extrae ÚNICAMENTE los tramos del PRIMER LOTE.
+            3. Extrae TODOS LOS TRAMOS TÉCNICOS. NO importa la cantidad.
+            4. REGLA DE ESCRITURAS ANTIGUAS: Si el documento no menciona grados/minutos/segundos, sino únicamente puntos cardinales (ej. "Al Norte linda con...", "Al Oriente..."), DEBES extraer ese punto cardinal como si fuera el rumbo. Ejemplo: {"rumbo_limpio": "NORTE"}.
+            5. NUNCA uses comillas dobles (") dentro de los valores de rumbo.
             
             Responde ÚNICAMENTE con este formato JSON:
             {
               "propietario": "Nombre completo",
-              "colindantes": ["Norte: ...", "Sur: ...", "Oriente: ...", "Poniente: ..."],
+              "colindantes": ["Norte: ...", "Sur: ..."],
               "servidumbres": "Describir si hay",
               "quebradas": "Describir si hay",
               "tramos": [
-                {"etiqueta": "E1", "rumbo_limpio": "N 10° 15' 20'' E", "distancia": 45.00, "es_curva": false},
-                {"etiqueta": "E2", "rumbo_limpio": "S 20° 00' 00'' W", "distancia": 12.30, "es_curva": true}
+                {"etiqueta": "E1", "rumbo_limpio": "NORTE", "distancia": 45.00, "es_curva": false},
+                {"etiqueta": "E2", "rumbo_limpio": "ORIENTE", "distancia": 12.30, "es_curva": false}
               ]
             }
-            IMPORTANTE: El arreglo "tramos" DEBE contener la lista completa de todos los linderos descritos en el PRIMER lote del documento. Revisa tu trabajo antes de terminar.
             """
             
             response = model.generate_content([prompt, gemini_file])
@@ -257,7 +270,7 @@ if archivo:
                 st.stop()
             
             ruta = crear_dxf_integral(datos)
-            status.update(label=f"✅ Datos recuperados de forma estricta. {len(datos.get('tramos', []))} tramos extraídos.", state="complete")
+            status.update(label=f"✅ Datos recuperados. {len(datos.get('tramos', []))} tramos extraídos.", state="complete")
             
             with open(ruta, "rb") as f:
                 st.download_button("💾 DESCARGAR DXF PROFESIONAL", f, file_name="Plano_Generado_NormAI.dxf")
