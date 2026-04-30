@@ -23,7 +23,7 @@ tipo_escritura = st.sidebar.radio(
 forzar_tramos = st.sidebar.number_input(
     "2. Forzar cantidad de tramos (0 = Auto)", 
     min_value=0, value=0, step=1,
-    help="Si la escritura es larga (ej. Altos de Metrópoli), pon el número exacto aquí para obligar a la IA a no rendirse."
+    help="Si la escritura es larga, pon el número exacto aquí para obligar a la IA a no rendirse."
 )
 
 st.title("📐 Procesamiento de escritura a poligonal")
@@ -65,7 +65,6 @@ def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
     if not texto: return ultimo_rad
     t = str(texto).upper().strip()
     
-    # 1. Azimut con grados
     match_az = re.search(r'(\d+)\s*[°º]\s*(\d+)\s*[\'’]\s*(\d+(?:\.\d+)?)?\s*["”\'\s]*', t)
     if match_az and not any(x in t for x in ['N', 'S', 'E', 'W', 'O']):
         g, m, s = match_az.groups()
@@ -75,7 +74,6 @@ def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
 
     t_norm = t.replace('OESTE', 'W').replace('PONIENTE', 'W').replace('ORIENTE', 'E').replace('ESTE', 'E').replace('NORTE', 'N').replace('SUR', 'S')
     
-    # 2. Rumbo con grados
     match_r = re.search(r'([NS])\s*(\d+)[°\s]*(\d+)[\'\s]*(\d+(?:\.\d+)?)?[\"”\'\s]*([EW])', t_norm)
     if match_r:
         ns, g, m, s, ew = match_r.groups()
@@ -87,7 +85,6 @@ def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
         elif ns == 'S' and ew == 'W': ang = 270 - dec
         return math.radians(ang)
         
-    # 3. Direcciones Cardinales (Para escrituras antiguas)
     letras = [c for c in t_norm if c in ['N', 'S', 'E', 'W']]
     if letras:
         if all(c == 'N' for c in letras): return math.radians(90)
@@ -110,6 +107,7 @@ def crear_dxf_integral(datos):
     current_x, current_y = 0.0, 0.0
     puntos_dwg = [(current_x, current_y)]
     ultimo_rad = 0.0
+    dist_cierre = 0.0 # Variable para calcular el error de cierre
 
     tramos = datos.get('tramos', [])
     for i, t in enumerate(tramos):
@@ -136,11 +134,11 @@ def crear_dxf_integral(datos):
     if len(puntos_dwg) > 1:
         msp.add_lwpolyline(puntos_dwg, dxfattribs={'color': 7})
         if puntos_dwg[-1] != puntos_dwg[0]:
+            # Calculamos la distancia geométrica desde el último punto al punto (0,0) de inicio
             dist_cierre = math.sqrt((puntos_dwg[-1][0])**2 + (puntos_dwg[-1][1])**2)
             if dist_cierre > 0.1: 
                 msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1})
 
-    # --- FICHA TÉCNICA ---
     max_x = max([p[0] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     max_y = max([p[1] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     x_side = max_x + 40
@@ -175,7 +173,6 @@ def crear_dxf_integral(datos):
     queb = str(datos.get('quebradas', 'No menciona'))
     msp.add_text(f"CUERPOS DE AGUA: {sanitizar_texto(queb)}", dxfattribs={'height': 0.8, 'color': 8}).set_placement((x_side + 2, y_ref))
 
-    # --- CUADRO TÉCNICO ---
     y_ref -= 15
     msp.add_text("CUADRO DE RUMBOS Y DISTANCIAS", dxfattribs={'height': 2.0, 'color': 4}).set_placement((x_side, y_ref))
     y_ref -= 5.0
@@ -223,7 +220,8 @@ def crear_dxf_integral(datos):
 
     temp_path = os.path.join(tempfile.gettempdir(), f"NormAI_Expediente_{int(time.time())}.dxf")
     doc.saveas(temp_path)
-    return temp_path
+    # Retornamos la ruta Y el cálculo del error de cierre
+    return temp_path, dist_cierre
 
 # --- 4. INTERFAZ PRINCIPAL ---
 st.info("👈 **Usa el Panel de Control a la izquierda** para ajustar la IA a la escritura que vas a subir.")
@@ -245,7 +243,6 @@ if archivo:
                 time.sleep(1)
                 gemini_file = genai.get_file(gemini_file.name)
 
-            # CONSTRUCCIÓN DINÁMICA DEL PROMPT SEGÚN EL PANEL DE CONTROL
             instrucciones_base = """
             Eres un ingeniero topógrafo salvadoreño. Analiza el documento legal adjunto.
             1. Extrae el propietario actual, los colindantes, las servidumbres y las quebradas.
@@ -297,11 +294,19 @@ if archivo:
                     clean_json = text[text.find('{'):text.rfind('}')+1].strip()
                 datos = json.loads(clean_json)
             except json.JSONDecodeError:
-                st.error("⚠️ Error de lectura de datos. La IA abortó la lectura por ser muy larga. Por favor, usa el Panel de Control a la izquierda y escribe la cantidad exacta de tramos (ej. 76) para forzarla a terminar.")
+                st.error("⚠️ Error de lectura de datos. La IA abortó la lectura. Usa el Panel de Control y forzar la cantidad de tramos.")
                 st.stop()
             
-            ruta = crear_dxf_integral(datos)
+            # Recibimos el error de cierre desde la función
+            ruta, error_cierre = crear_dxf_integral(datos)
+            
             status.update(label=f"✅ Datos recuperados con éxito. {len(datos.get('tramos', []))} tramos extraídos.", state="complete")
+            
+            # 🔥 LA NUEVA ALERTA DE AUDITORÍA 🔥
+            if error_cierre > 1.0:
+                st.error(f"🚨 **ALERTA DE AUDITORÍA NORM.AI:** El polígono no cierra. Se detectó una brecha topográfica de **{error_cierre:,.2f} metros** entre el inicio y el fin. Es sumamente probable que la escritura tenga vacíos legales (omisión de linderos) o errores graves de redacción notarial. Verifica la línea roja en tu plano.")
+            elif error_cierre > 0.1:
+                st.warning(f"⚠️ **Nota Topográfica:** El polígono presenta un error de cierre de **{error_cierre:,.2f} metros**. Esto suele ser típico por pérdida de decimales en escrituras antiguas.")
             
             with open(ruta, "rb") as f:
                 st.download_button("💾 DESCARGAR DXF PROFESIONAL", f, file_name="Plano_Generado_NormAI.dxf")
