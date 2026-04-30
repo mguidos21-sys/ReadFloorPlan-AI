@@ -10,7 +10,6 @@ import time
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Procesamiento de escritura a poligonal", layout="wide")
-# TÍTULO ACTUALIZADO SEGÚN TU SOLICITUD
 st.title("📐 Procesamiento de escritura a poligonal")
 
 MODELO_ACTIVO = 'gemini-2.5-flash'
@@ -19,7 +18,7 @@ if "GOOGLE_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
     model = genai.GenerativeModel(model_name=MODELO_ACTIVO)
 else:
-    st.error("⚠️ Configura la API Key en los secrets de Streamlit.")
+    st.error("⚠️ Configura la API Key.")
     st.stop()
 
 # --- 2. FILTROS MATEMÁTICOS Y CÁLCULO DE ÁREA ---
@@ -51,7 +50,7 @@ def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
     t = str(texto).upper().strip()
     
     # 1. Azimut
-    match_az = re.search(r'(\d+)\s*[°º]\s*(\d+)\s*[\'’]\s*(\d+(?:\.\d+)?)?\s*["”]', t)
+    match_az = re.search(r'(\d+)\s*[°º]\s*(\d+)\s*[\'’]\s*(\d+(?:\.\d+)?)?\s*["”\'\s]*', t)
     if match_az and not any(x in t for x in ['N', 'S', 'E', 'W', 'O']):
         g, m, s = match_az.groups()
         seg = float(s) if s else 0.0
@@ -60,7 +59,7 @@ def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
 
     # 2. Rumbo
     t_norm = t.replace('OESTE', 'W').replace('PONIENTE', 'W').replace('ORIENTE', 'E').replace('ESTE', 'E').replace('NORTE', 'N').replace('SUR', 'S')
-    match_r = re.search(r'([NS])\s*(\d+)[°\s]*(\d+)[\'\s]*(\d+(?:\.\d+)?)?[\"”\s]*([EW])', t_norm)
+    match_r = re.search(r'([NS])\s*(\d+)[°\s]*(\d+)[\'\s]*(\d+(?:\.\d+)?)?[\"”\'\s]*([EW])', t_norm)
     if match_r:
         ns, g, m, s, ew = match_r.groups()
         seg = float(s) if s else 0.0
@@ -202,7 +201,7 @@ archivo = st.file_uploader("Sube el PDF de la Escritura", type=["pdf"])
 if archivo:
     if st.button("🚀 Extraer Datos y Trazar Poligonal"):
         try:
-            status = st.status("Analizando documento nativo...", expanded=True)
+            status = st.status("Analizando documento nativo de forma estricta...", expanded=True)
             
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
                 temp_pdf.write(archivo.read())
@@ -215,12 +214,13 @@ if archivo:
                 gemini_file = genai.get_file(gemini_file.name)
 
             prompt = """
-            Eres un ingeniero topógrafo salvadoreño. Analiza el documento legal adjunto.
+            Eres un ingeniero topógrafo salvadoreño. Analiza la escritura o documento legal adjunto.
             
-            INSTRUCCIONES:
-            1. Extrae el propietario actual, los colindantes, las servidumbres y las quebradas.
-            2. Extrae TODOS LOS TRAMOS TÉCNICOS (rumbos/azimuts y distancias) del perímetro.
-            3. NO inventes datos. Extrae la información real tal como está escrita.
+            INSTRUCCIONES ESTRICTAS:
+            1. Extrae el propietario, los colindantes, las servidumbres y las quebradas.
+            2. Extrae TODOS LOS TRAMOS TÉCNICOS del perímetro principal. NO importa cuántos sean (pueden ser 4, 15, 76 o más). Debes extraerlos TODOS sin omitir absolutamente ninguno.
+            3. NO inventes datos. Extrae los rumbos/azimuts y distancias reales tal como están escritos en el texto.
+            4. REGLA DE FORMATO JSON: NUNCA uses comillas dobles (") dentro de los valores de rumbo para los segundos, usa dos comillas simples ('') o ignora el símbolo para no quebrar la estructura de datos.
             
             Responde ÚNICAMENTE con este formato JSON:
             {
@@ -229,9 +229,11 @@ if archivo:
               "servidumbres": "Describir si hay",
               "quebradas": "Describir si hay",
               "tramos": [
-                {"etiqueta": "E1", "rumbo_limpio": "N 10° 15' 20\" E", "distancia": 45.00, "es_curva": false}
+                {"etiqueta": "E1", "rumbo_limpio": "N 10° 15' 20'' E", "distancia": 45.00, "es_curva": false},
+                {"etiqueta": "E2", "rumbo_limpio": "S 20° 00' 00'' W", "distancia": 12.30, "es_curva": true}
               ]
             }
+            IMPORTANTE: El arreglo "tramos" DEBE contener la lista completa de todos los linderos descritos en el documento. Revisa tu trabajo antes de terminar.
             """
             
             response = model.generate_content([prompt, gemini_file])
@@ -246,11 +248,11 @@ if archivo:
                     clean_json = text[text.find('{'):text.rfind('}')+1].strip()
                 datos = json.loads(clean_json)
             except json.JSONDecodeError:
-                st.error("⚠️ Error de lectura de datos.")
+                st.error("⚠️ Error de lectura de datos. La IA generó un formato inválido.")
                 st.stop()
             
             ruta = crear_dxf_integral(datos)
-            status.update(label=f"✅ Datos recuperados. {len(datos.get('tramos', []))} tramos extraídos.", state="complete")
+            status.update(label=f"✅ Datos recuperados de forma estricta. {len(datos.get('tramos', []))} tramos extraídos.", state="complete")
             
             with open(ruta, "rb") as f:
                 st.download_button("💾 DESCARGAR DXF PROFESIONAL", f, file_name="Plano_Generado_NormAI.dxf")
@@ -264,5 +266,4 @@ if archivo:
             st.error(f"Error: {e}")
 
 st.divider()
-# CAPCIÓN ACTUALIZADA CON TU NOMBRE Y TÍTULO
 st.caption("Norm.AI | Tecnología de Precisión | Arq. Miguel Guidos")
