@@ -196,6 +196,10 @@ def crear_dxf_integral(datos):
     return temp_path
 
 # --- 4. INTERFAZ ---
+
+# Advertencia inyectada para los usuarios
+st.info("💡 **Nota de Uso:** El sistema está optimizado para procesar la poligonal de **un solo lote por documento**. Si subes una escritura con múltiples propiedades o lotes (ej. 'Primero', 'Segundo'), la IA graficará únicamente el perímetro del primer inmueble descrito.")
+
 archivo = st.file_uploader("Sube el PDF de la Escritura", type=["pdf"])
 
 if archivo:
@@ -218,9 +222,10 @@ if archivo:
             
             INSTRUCCIONES ESTRICTAS:
             1. Extrae el propietario, los colindantes, las servidumbres y las quebradas.
-            2. Extrae TODOS LOS TRAMOS TÉCNICOS del perímetro principal. NO importa cuántos sean (pueden ser 4, 15, 76 o más). Debes extraerlos TODOS sin omitir absolutamente ninguno.
-            3. NO inventes datos. Extrae los rumbos/azimuts y distancias reales tal como están escritos en el texto.
-            4. REGLA DE FORMATO JSON: NUNCA uses comillas dobles (") dentro de los valores de rumbo para los segundos, usa dos comillas simples ('') o ignora el símbolo para no quebrar la estructura de datos.
+            2. REGLA DE AISLAMIENTO (MÚLTIPLES LOTES): Si la escritura describe más de un lote o propiedad (por ejemplo, enumera un lote "PRIMERO", luego un "SEGUNDO", etc.), DEBES EXTRAER ÚNICAMENTE LOS TRAMOS DEL PRIMER LOTE. Ignora por completo los rumbos y distancias de cualquier lote secundario para evitar el cruce de datos.
+            3. Extrae TODOS LOS TRAMOS TÉCNICOS del perímetro del primer lote (o del único lote si solo hay uno). NO importa cuántos sean. Debes extraerlos TODOS sin omitir absolutamente ninguno de esa poligonal.
+            4. NO inventes datos. Extrae los rumbos/azimuts y distancias reales tal como están escritos en el texto.
+            5. REGLA DE FORMATO JSON: NUNCA uses comillas dobles (") dentro de los valores de rumbo para los segundos, usa dos comillas simples ('') o ignora el símbolo para no quebrar la estructura de datos.
             
             Responde ÚNICAMENTE con este formato JSON:
             {
@@ -233,7 +238,7 @@ if archivo:
                 {"etiqueta": "E2", "rumbo_limpio": "S 20° 00' 00'' W", "distancia": 12.30, "es_curva": true}
               ]
             }
-            IMPORTANTE: El arreglo "tramos" DEBE contener la lista completa de todos los linderos descritos en el documento. Revisa tu trabajo antes de terminar.
+            IMPORTANTE: El arreglo "tramos" DEBE contener la lista completa de todos los linderos descritos en el PRIMER lote del documento. Revisa tu trabajo antes de terminar.
             """
             
             response = model.generate_content([prompt, gemini_file])
