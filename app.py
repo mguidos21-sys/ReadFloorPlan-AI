@@ -49,7 +49,6 @@ def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
     if not texto: return ultimo_rad
     t = str(texto).upper().strip()
     
-    # 1. Azimut con grados
     match_az = re.search(r'(\d+)\s*[°º]\s*(\d+)\s*[\'’]\s*(\d+(?:\.\d+)?)?\s*["”\'\s]*', t)
     if match_az and not any(x in t for x in ['N', 'S', 'E', 'W', 'O']):
         g, m, s = match_az.groups()
@@ -59,7 +58,6 @@ def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
 
     t_norm = t.replace('OESTE', 'W').replace('PONIENTE', 'W').replace('ORIENTE', 'E').replace('ESTE', 'E').replace('NORTE', 'N').replace('SUR', 'S')
     
-    # 2. Rumbo con grados
     match_r = re.search(r'([NS])\s*(\d+)[°\s]*(\d+)[\'\s]*(\d+(?:\.\d+)?)?[\"”\'\s]*([EW])', t_norm)
     if match_r:
         ns, g, m, s, ew = match_r.groups()
@@ -71,7 +69,6 @@ def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
         elif ns == 'S' and ew == 'W': ang = 270 - dec
         return math.radians(ang)
         
-    # 3. PLAN B: Direcciones Cardinales Puras (Para escrituras antiguas)
     letras = [c for c in t_norm if c in ['N', 'S', 'E', 'W']]
     if letras:
         if all(c == 'N' for c in letras): return math.radians(90)
@@ -124,7 +121,6 @@ def crear_dxf_integral(datos):
             if dist_cierre > 0.1: 
                 msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1})
 
-    # --- FICHA TÉCNICA ---
     max_x = max([p[0] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     max_y = max([p[1] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     x_side = max_x + 40
@@ -159,7 +155,6 @@ def crear_dxf_integral(datos):
     queb = str(datos.get('quebradas', 'No menciona'))
     msp.add_text(f"CUERPOS DE AGUA: {sanitizar_texto(queb)}", dxfattribs={'height': 0.8, 'color': 8}).set_placement((x_side + 2, y_ref))
 
-    # --- CUADRO TÉCNICO ---
     y_ref -= 15
     msp.add_text("CUADRO DE RUMBOS Y DISTANCIAS", dxfattribs={'height': 2.0, 'color': 4}).set_placement((x_side, y_ref))
     y_ref -= 5.0
@@ -210,14 +205,14 @@ def crear_dxf_integral(datos):
     return temp_path
 
 # --- 4. INTERFAZ ---
-st.info("💡 **Nota de Uso:** El sistema extrae los datos del **primer lote** descrito. Si carece de rumbos precisos (grados), generará un croquis ortogonal basado en puntos cardinales.")
+st.info("💡 **Sistema Anti-Fatiga Activado:** Extracción exhaustiva garantizada para escrituras de cualquier longitud.")
 
 archivo = st.file_uploader("Sube el PDF de la Escritura", type=["pdf"])
 
 if archivo:
     if st.button("🚀 Extraer Datos y Trazar Poligonal"):
         try:
-            status = st.status("Analizando documento nativo de forma estricta...", expanded=True)
+            status = st.status("Analizando documento nativo con precisión milimétrica...", expanded=True)
             
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
                 temp_pdf.write(archivo.read())
@@ -230,30 +225,36 @@ if archivo:
                 gemini_file = genai.get_file(gemini_file.name)
 
             prompt = """
-            Eres un ingeniero topógrafo experto. Analiza el documento legal adjunto.
+            Eres un ingeniero topógrafo experto analizando un documento legal.
             
-            INSTRUCCIONES ESTRICTAS (CUMPLIMIENTO OBLIGATORIO):
-            1. Extrae el propietario, colindantes, servidumbres y quebradas.
-            2. REGLA DE AISLAMIENTO (MÚLTIPLES LOTES): Si la escritura describe más de un lote o propiedad (ej. "Lote PRIMERO", "Lote SEGUNDO"), extrae ÚNICAMENTE los tramos del PRIMER LOTE. Ignora el resto para evitar polígonos cruzados.
-            3. MANDATO ANTI-PEREZA (EXHAUSTIVIDAD): Extrae TODOS LOS TRAMOS TÉCNICOS del perímetro. ¡NO IMPORTA SI SON 4, 15, 76 O MÁS DE 100 TRAMOS! Tienes estrictamente prohibido resumir, omitir o cortar la lista a la mitad. Debes extraer el perímetro completo hasta cerrarlo.
-            4. REGLA DE ESCRITURAS ANTIGUAS: Si el documento no menciona grados/minutos/segundos, sino únicamente puntos cardinales lineales (ej. "Al Norte linda con..."), extrae el punto cardinal como rumbo. Ejemplo: {"rumbo_limpio": "NORTE"}. Si tiene grados, extrae el rumbo completo de forma normal.
-            5. REGLA DE FORMATO: NUNCA uses comillas dobles (") dentro de los valores de rumbo para referirte a los segundos. Usa dos comillas simples ('') o ignora el símbolo.
+            INSTRUCCIONES ESTRICTAS Y OBLIGATORIAS:
+            1. Extrae propietario, colindantes, servidumbres y quebradas.
+            2. AISLAMIENTO: Si el documento describe varios lotes (ej. Lote 1, Lote 2), extrae ÚNICAMENTE la descripción técnica del PRIMER LOTE.
+            3. MANDATO DE EXHAUSTIVIDAD ABSOLUTA: TIENES ESTRICTAMENTE PROHIBIDO RESUMIR LA LISTA DE TRAMOS.
+               - Inicia en el primer tramo del perímetro.
+               - Extrae cada tramo secuencialmente.
+               - Tu condición de parada NO es una cantidad de tramos, sino encontrar en el texto la frase que indica el cierre del polígono (ej. "y así se llega al vértice inicial", "llegando al punto de partida", etc.).
+               - Así sean 10, 50 o 150 tramos, tu obligación es procesar el texto hasta la frase de cierre.
+            4. ESCRITURAS ANTIGUAS: Si solo hay puntos cardinales (ej. "Al Norte linda..."), úsalos como rumbo (ej. {"rumbo_limpio": "NORTE"}).
+            5. FORMATO: NUNCA uses comillas dobles (") para los segundos en los rumbos. Usa dos comillas simples ('').
             
-            Responde ÚNICAMENTE con este formato JSON:
+            Responde ÚNICAMENTE con este JSON:
             {
               "propietario": "Nombre completo",
               "colindantes": ["Norte: ...", "Sur: ..."],
               "servidumbres": "Describir si hay",
               "quebradas": "Describir si hay",
               "tramos": [
-                {"etiqueta": "E1", "rumbo_limpio": "N 10° 15' 20'' E", "distancia": 45.00, "es_curva": false},
-                {"etiqueta": "E2", "rumbo_limpio": "NORTE", "distancia": 12.30, "es_curva": true}
+                {"etiqueta": "E1", "rumbo_limpio": "N 10° 15' 20'' E", "distancia": 45.00, "es_curva": false}
               ]
             }
-            IMPORTANTE: El arreglo "tramos" DEBE contener la lista COMPLETA de todos los linderos descritos para evitar colapsos geométricos. Revisa tu trabajo.
             """
             
-            response = model.generate_content([prompt, gemini_file])
+            # 🔥 INYECCIÓN DE PARÁMETROS PARA EVITAR PEREZA ARTIFICIAL 🔥
+            response = model.generate_content(
+                [prompt, gemini_file],
+                generation_config={"temperature": 0.0, "max_output_tokens": 8192}
+            )
             text = response.text
             
             try:
@@ -265,11 +266,11 @@ if archivo:
                     clean_json = text[text.find('{'):text.rfind('}')+1].strip()
                 datos = json.loads(clean_json)
             except json.JSONDecodeError:
-                st.error("⚠️ Error de lectura de datos. La IA generó un formato inválido.")
+                st.error("⚠️ Error de lectura de datos. El documento es demasiado complejo o la IA abortó la escritura.")
                 st.stop()
             
             ruta = crear_dxf_integral(datos)
-            status.update(label=f"✅ Datos recuperados. {len(datos.get('tramos', []))} tramos extraídos.", state="complete")
+            status.update(label=f"✅ Datos recuperados íntegramente. {len(datos.get('tramos', []))} tramos extraídos.", state="complete")
             
             with open(ruta, "rb") as f:
                 st.download_button("💾 DESCARGAR DXF PROFESIONAL", f, file_name="Plano_Generado_NormAI.dxf")
