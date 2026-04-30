@@ -10,6 +10,22 @@ import time
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Procesamiento de escritura a poligonal", layout="wide")
+
+# --- PANEL DE CONTROL LATERAL ---
+st.sidebar.title("⚙️ Panel de Control")
+st.sidebar.markdown("Ajusta el motor de la IA según la escritura.")
+
+tipo_escritura = st.sidebar.radio(
+    "1. Tipo de Documento",
+    ["Estándar / Remedición Única", "Múltiples Lotes / Antigua (Lineal)"]
+)
+
+forzar_tramos = st.sidebar.number_input(
+    "2. Forzar cantidad de tramos (0 = Auto)", 
+    min_value=0, value=0, step=1,
+    help="Si la escritura es larga (ej. Altos de Metrópoli), pon el número exacto aquí para obligar a la IA a no rendirse."
+)
+
 st.title("📐 Procesamiento de escritura a poligonal")
 
 MODELO_ACTIVO = 'gemini-2.5-flash'
@@ -49,6 +65,7 @@ def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
     if not texto: return ultimo_rad
     t = str(texto).upper().strip()
     
+    # 1. Azimut con grados
     match_az = re.search(r'(\d+)\s*[°º]\s*(\d+)\s*[\'’]\s*(\d+(?:\.\d+)?)?\s*["”\'\s]*', t)
     if match_az and not any(x in t for x in ['N', 'S', 'E', 'W', 'O']):
         g, m, s = match_az.groups()
@@ -58,6 +75,7 @@ def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
 
     t_norm = t.replace('OESTE', 'W').replace('PONIENTE', 'W').replace('ORIENTE', 'E').replace('ESTE', 'E').replace('NORTE', 'N').replace('SUR', 'S')
     
+    # 2. Rumbo con grados
     match_r = re.search(r'([NS])\s*(\d+)[°\s]*(\d+)[\'\s]*(\d+(?:\.\d+)?)?[\"”\'\s]*([EW])', t_norm)
     if match_r:
         ns, g, m, s, ew = match_r.groups()
@@ -69,6 +87,7 @@ def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
         elif ns == 'S' and ew == 'W': ang = 270 - dec
         return math.radians(ang)
         
+    # 3. Direcciones Cardinales (Para escrituras antiguas)
     letras = [c for c in t_norm if c in ['N', 'S', 'E', 'W']]
     if letras:
         if all(c == 'N' for c in letras): return math.radians(90)
@@ -121,6 +140,7 @@ def crear_dxf_integral(datos):
             if dist_cierre > 0.1: 
                 msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1})
 
+    # --- FICHA TÉCNICA ---
     max_x = max([p[0] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     max_y = max([p[1] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     x_side = max_x + 40
@@ -155,6 +175,7 @@ def crear_dxf_integral(datos):
     queb = str(datos.get('quebradas', 'No menciona'))
     msp.add_text(f"CUERPOS DE AGUA: {sanitizar_texto(queb)}", dxfattribs={'height': 0.8, 'color': 8}).set_placement((x_side + 2, y_ref))
 
+    # --- CUADRO TÉCNICO ---
     y_ref -= 15
     msp.add_text("CUADRO DE RUMBOS Y DISTANCIAS", dxfattribs={'height': 2.0, 'color': 4}).set_placement((x_side, y_ref))
     y_ref -= 5.0
@@ -204,15 +225,15 @@ def crear_dxf_integral(datos):
     doc.saveas(temp_path)
     return temp_path
 
-# --- 4. INTERFAZ ---
-st.info("💡 **Sistema Anti-Fatiga Activado:** Extracción exhaustiva garantizada para escrituras de cualquier longitud.")
+# --- 4. INTERFAZ PRINCIPAL ---
+st.info("👈 **Usa el Panel de Control a la izquierda** para ajustar la IA a la escritura que vas a subir.")
 
 archivo = st.file_uploader("Sube el PDF de la Escritura", type=["pdf"])
 
 if archivo:
     if st.button("🚀 Extraer Datos y Trazar Poligonal"):
         try:
-            status = st.status("Analizando documento nativo con precisión milimétrica...", expanded=True)
+            status = st.status(f"Analizando en modo: {tipo_escritura}...", expanded=True)
             
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
                 temp_pdf.write(archivo.read())
@@ -224,37 +245,47 @@ if archivo:
                 time.sleep(1)
                 gemini_file = genai.get_file(gemini_file.name)
 
-            prompt = """
-            Eres un ingeniero topógrafo experto analizando un documento legal.
+            # CONSTRUCCIÓN DINÁMICA DEL PROMPT SEGÚN EL PANEL DE CONTROL
+            instrucciones_base = """
+            Eres un ingeniero topógrafo salvadoreño. Analiza el documento legal adjunto.
+            1. Extrae el propietario actual, los colindantes, las servidumbres y las quebradas.
+            2. NO inventes datos. Extrae la información real tal como está escrita.
+            3. REGLA DE FORMATO JSON: NUNCA uses comillas dobles (") para referirte a los segundos en los rumbos, usa dos comillas simples ('') o ignóralo.
+            """
+
+            if tipo_escritura == "Múltiples Lotes / Antigua (Lineal)":
+                instrucciones_especificas = """
+                - REGLA DE AISLAMIENTO: Si el documento describe varios lotes (ej. Lote PRIMERO, Lote SEGUNDO), extrae ÚNICAMENTE la descripción técnica del PRIMER LOTE.
+                - REGLA DE ESCRITURAS ANTIGUAS: Si el documento no menciona grados/minutos/segundos, sino únicamente puntos cardinales (ej. "Al Norte linda con..."), DEBES extraer ese punto cardinal como si fuera el rumbo. Ejemplo: {"rumbo_limpio": "NORTE"}.
+                """
+            else:
+                instrucciones_especificas = """
+                - Extrae TODOS LOS TRAMOS TÉCNICOS del perímetro principal secuencialmente. No omitas ninguno.
+                """
+
+            if forzar_tramos > 0:
+                instrucciones_especificas += f"\n- ¡OBLIGATORIO!: El perímetro principal tiene EXACTAMENTE {forzar_tramos} TRAMOS. Tienes estrictamente prohibido resumir el trabajo. DEBES extraer la lista completa de {forzar_tramos} linderos."
+
+            prompt = f"""
+            {instrucciones_base}
             
-            INSTRUCCIONES ESTRICTAS Y OBLIGATORIAS:
-            1. Extrae propietario, colindantes, servidumbres y quebradas.
-            2. AISLAMIENTO: Si el documento describe varios lotes (ej. Lote 1, Lote 2), extrae ÚNICAMENTE la descripción técnica del PRIMER LOTE.
-            3. MANDATO DE EXHAUSTIVIDAD ABSOLUTA: TIENES ESTRICTAMENTE PROHIBIDO RESUMIR LA LISTA DE TRAMOS.
-               - Inicia en el primer tramo del perímetro.
-               - Extrae cada tramo secuencialmente.
-               - Tu condición de parada NO es una cantidad de tramos, sino encontrar en el texto la frase que indica el cierre del polígono (ej. "y así se llega al vértice inicial", "llegando al punto de partida", etc.).
-               - Así sean 10, 50 o 150 tramos, tu obligación es procesar el texto hasta la frase de cierre.
-            4. ESCRITURAS ANTIGUAS: Si solo hay puntos cardinales (ej. "Al Norte linda..."), úsalos como rumbo (ej. {"rumbo_limpio": "NORTE"}).
-            5. FORMATO: NUNCA uses comillas dobles (") para los segundos en los rumbos. Usa dos comillas simples ('').
+            INSTRUCCIONES ESPECÍFICAS PARA ESTE CASO:
+            {instrucciones_especificas}
             
-            Responde ÚNICAMENTE con este JSON:
-            {
+            Responde ÚNICAMENTE con este formato JSON:
+            {{
               "propietario": "Nombre completo",
-              "colindantes": ["Norte: ...", "Sur: ..."],
+              "colindantes": ["Norte: ...", "Sur: ...", "Oriente: ...", "Poniente: ..."],
               "servidumbres": "Describir si hay",
               "quebradas": "Describir si hay",
               "tramos": [
-                {"etiqueta": "E1", "rumbo_limpio": "N 10° 15' 20'' E", "distancia": 45.00, "es_curva": false}
+                {{"etiqueta": "E1", "rumbo_limpio": "N 10° 15' 20'' E", "distancia": 45.00, "es_curva": false}},
+                {{"etiqueta": "E2", "rumbo_limpio": "S 20° 00' 00'' W", "distancia": 12.30, "es_curva": true}}
               ]
-            }
+            }}
             """
             
-            # 🔥 INYECCIÓN DE PARÁMETROS PARA EVITAR PEREZA ARTIFICIAL 🔥
-            response = model.generate_content(
-                [prompt, gemini_file],
-                generation_config={"temperature": 0.0, "max_output_tokens": 8192}
-            )
+            response = model.generate_content([prompt, gemini_file])
             text = response.text
             
             try:
@@ -266,11 +297,11 @@ if archivo:
                     clean_json = text[text.find('{'):text.rfind('}')+1].strip()
                 datos = json.loads(clean_json)
             except json.JSONDecodeError:
-                st.error("⚠️ Error de lectura de datos. El documento es demasiado complejo o la IA abortó la escritura.")
+                st.error("⚠️ Error de lectura de datos. La IA abortó la lectura por ser muy larga. Por favor, usa el Panel de Control a la izquierda y escribe la cantidad exacta de tramos (ej. 76) para forzarla a terminar.")
                 st.stop()
             
             ruta = crear_dxf_integral(datos)
-            status.update(label=f"✅ Datos recuperados íntegramente. {len(datos.get('tramos', []))} tramos extraídos.", state="complete")
+            status.update(label=f"✅ Datos recuperados con éxito. {len(datos.get('tramos', []))} tramos extraídos.", state="complete")
             
             with open(ruta, "rb") as f:
                 st.download_button("💾 DESCARGAR DXF PROFESIONAL", f, file_name="Plano_Generado_NormAI.dxf")
