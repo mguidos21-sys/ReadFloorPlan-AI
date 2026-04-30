@@ -43,21 +43,24 @@ def limpiar_numero_distancia(valor):
     numeros = re.findall(r"[-+]?\d*\.\d+|\d+", str(valor).replace(',', '.'))
     if not numeros: return 0.0
     n = float(numeros[0])
+    # Mantenemos filtro ligero en Python (5cm), el pesado lo hace la IA en el prompt
     return n if n >= 0.05 else 0.0
 
 def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
     if not texto: return ultimo_rad
     t = str(texto).upper().strip()
     
-    match_az = re.search(r'(\d+)\s*[°º]\s*(\d+)\s*[\'’]\s*(\d+(?:\.\d+)?)?\s*["”\'\s]*', t)
+    # 1. Azimut
+    match_az = re.search(r'(\d+)\s*[°º]?\s*(\d+)\s*[\'’]\s*(\d+(?:\.\d+)?)?\s*["”\'\s]*', t)
     if match_az and not any(x in t for x in ['N', 'S', 'E', 'W', 'O']):
         g, m, s = match_az.groups()
         seg = float(s) if s else 0.0
         dec = float(g) + float(m)/60 + seg/3600
         return math.radians(90 - dec)
 
+    # 2. Rumbo
     t_norm = t.replace('OESTE', 'W').replace('PONIENTE', 'W').replace('ORIENTE', 'E').replace('ESTE', 'E').replace('NORTE', 'N').replace('SUR', 'S')
-    match_r = re.search(r'([NS])\s*(\d+)[°\s]*(\d+)[\'\s]*(\d+(?:\.\d+)?)?[\"”\'\s]*([EW])', t_norm)
+    match_r = re.search(r'([NS])\s*(\d+)[°\sº]*(\d+)[\'\s]*(\d+(?:\.\d+)?)?[\"”\'\s]*([EW])', t_norm)
     if match_r:
         ns, g, m, s, ew = match_r.groups()
         seg = float(s) if s else 0.0
@@ -192,12 +195,12 @@ def crear_dxf_integral(datos):
     return temp_path
 
 # --- 4. INTERFAZ ---
-archivo = st.file_uploader("Sube cualquier Escritura (PDF)", type=["pdf"])
+archivo = st.file_uploader("Sube el PDF de Linderos Aisaldo", type=["pdf"])
 
 if archivo:
-    if st.button("🚀 Extraer Datos y Trazar Poligonal"):
+    if st.button("🚀 Extraer Datos y Trazar Poligonal (Anti-Ruido)"):
         try:
-            status = st.status("Analizando documento nativo...", expanded=True)
+            status = st.status("Analizando PDF aislado. Implementando blindaje contra ruido catastral...", expanded=True)
             
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
                 temp_pdf.write(archivo.read())
@@ -210,24 +213,22 @@ if archivo:
                 gemini_file = genai.get_file(gemini_file.name)
 
             prompt = """
-            Eres un ingeniero topógrafo salvadoreño. Analiza el documento legal adjunto.
+            Eres un ingeniero topógrafo experto. Analiza el PDF adjunto (que contiene la descripción técnica de linderos).
             
-            INSTRUCCIONES ESTRICTAS:
-            1. Extrae el propietario actual, los colindantes, las servidumbres y las quebradas.
-            2. Extrae TODOS LOS TRAMOS TÉCNICOS (rumbos/azimuts y distancias) del perímetro. No importa la cantidad, extrae la lista completa.
-            3. NO inventes datos. Extrae la información real tal como está escrita.
-            
-            REGLA DE ORO PARA EL FORMATO:
-            NUNCA utilices el símbolo de comillas dobles (") para referirte a los segundos en los rumbos, ya que esto arruina la estructura del código. Si un rumbo tiene segundos, utiliza dos comillas simples ('') o ignora el símbolo.
-            Ejemplo CORRECTO: "N 10° 15' 20'' E"
-            Ejemplo INCORRECTO: "N 10° 15' 20" E"
-            
-            Responde ÚNICAMENTE con este formato JSON:
+            MANDATO DE PUREZA CATASTRAL:
+            1. Extrae el propietario, colindantes, etc.
+            2. Extrae TODOS LOS TRAMOS TÉCNICOS secuenciales.
+            3. NO inventes datos. 
+            4. FILTRADO DE RUIDO CRÍTICO: El PDF puede contener texto basura (ej. números de página, notas al margen) que NotebookLM leyó como si fuesen linderos.
+               - Busca tramos que sigan la estructura secuencial.
+               - Si encuentras distancias menores a 1 metro que parecen ruido de OCR o números sueltos (ej. 0.01m, 0.40m), ignóralas por completo. El perímetro real debe estar compuesto por tramos significativos.
+
+            Responde ÚNICAMENTE con este JSON:
             {
-              "propietario": "Nombre completo",
-              "colindantes": ["Norte: ...", "Sur: ...", "Oriente: ...", "Poniente: ..."],
-              "servidumbres": "Describir si hay",
-              "quebradas": "Describir si hay",
+              "propietario": "Nombre",
+              "colindantes": ["..."],
+              "servidumbres": "...",
+              "quebradas": "...",
               "tramos": [
                 {"etiqueta": "E1", "rumbo_limpio": "N 10° 15' 20'' E", "distancia": 45.00, "es_curva": false}
               ]
@@ -246,14 +247,14 @@ if archivo:
                     clean_json = text[text.find('{'):text.rfind('}')+1].strip()
                 datos = json.loads(clean_json)
             except json.JSONDecodeError:
-                st.error("⚠️ Error de lectura de datos. La IA devolvió un formato ilegible.")
+                st.error("⚠️ Error de lectura de datos.")
                 st.stop()
             
             ruta = crear_dxf_integral(datos)
-            status.update(label=f"✅ Datos recuperados. {len(datos.get('tramos', []))} tramos extraídos.", state="complete")
+            status.update(label=f"✅ Datos recuperados. {len(datos.get('tramos', []))} tramos reales filtrados.", state="complete")
             
             with open(ruta, "rb") as f:
-                st.download_button("💾 DESCARGAR DXF PROFESIONAL", f, file_name="Plano_Generado_NormAI.dxf")
+                st.download_button("💾 DESCARGAR DXF PROFESIONAL", f, file_name="Plano_Campus_Filtrado.dxf")
             
             try:
                 genai.delete_file(gemini_file.name)
