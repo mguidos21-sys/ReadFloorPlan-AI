@@ -10,6 +10,7 @@ import time
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Procesamiento de escritura a poligonal", layout="wide")
+# TÍTULO ACTUALIZADO SEGÚN TU SOLICITUD
 st.title("📐 Procesamiento de escritura a poligonal")
 
 MODELO_ACTIVO = 'gemini-2.5-flash'
@@ -43,7 +44,6 @@ def limpiar_numero_distancia(valor):
     numeros = re.findall(r"[-+]?\d*\.\d+|\d+", str(valor).replace(',', '.'))
     if not numeros: return 0.0
     n = float(numeros[0])
-    # Mantenemos filtro ligero en Python (5cm), el pesado lo hace la IA en el prompt
     return n if n >= 0.05 else 0.0
 
 def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
@@ -51,7 +51,7 @@ def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
     t = str(texto).upper().strip()
     
     # 1. Azimut
-    match_az = re.search(r'(\d+)\s*[°º]?\s*(\d+)\s*[\'’]\s*(\d+(?:\.\d+)?)?\s*["”\'\s]*', t)
+    match_az = re.search(r'(\d+)\s*[°º]\s*(\d+)\s*[\'’]\s*(\d+(?:\.\d+)?)?\s*["”]', t)
     if match_az and not any(x in t for x in ['N', 'S', 'E', 'W', 'O']):
         g, m, s = match_az.groups()
         seg = float(s) if s else 0.0
@@ -60,7 +60,7 @@ def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
 
     # 2. Rumbo
     t_norm = t.replace('OESTE', 'W').replace('PONIENTE', 'W').replace('ORIENTE', 'E').replace('ESTE', 'E').replace('NORTE', 'N').replace('SUR', 'S')
-    match_r = re.search(r'([NS])\s*(\d+)[°\sº]*(\d+)[\'\s]*(\d+(?:\.\d+)?)?[\"”\'\s]*([EW])', t_norm)
+    match_r = re.search(r'([NS])\s*(\d+)[°\s]*(\d+)[\'\s]*(\d+(?:\.\d+)?)?[\"”\s]*([EW])', t_norm)
     if match_r:
         ns, g, m, s, ew = match_r.groups()
         seg = float(s) if s else 0.0
@@ -111,6 +111,7 @@ def crear_dxf_integral(datos):
             if dist_cierre > 0.1: 
                 msp.add_line(puntos_dwg[-1], puntos_dwg[0], dxfattribs={'color': 1})
 
+    # --- FICHA TÉCNICA ---
     max_x = max([p[0] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     max_y = max([p[1] for p in puntos_dwg]) if len(puntos_dwg) > 1 else 0
     x_side = max_x + 40
@@ -145,6 +146,7 @@ def crear_dxf_integral(datos):
     queb = str(datos.get('quebradas', 'No menciona'))
     msp.add_text(f"CUERPOS DE AGUA: {sanitizar_texto(queb)}", dxfattribs={'height': 0.8, 'color': 8}).set_placement((x_side + 2, y_ref))
 
+    # --- CUADRO TÉCNICO ---
     y_ref -= 15
     msp.add_text("CUADRO DE RUMBOS Y DISTANCIAS", dxfattribs={'height': 2.0, 'color': 4}).set_placement((x_side, y_ref))
     y_ref -= 5.0
@@ -195,12 +197,12 @@ def crear_dxf_integral(datos):
     return temp_path
 
 # --- 4. INTERFAZ ---
-archivo = st.file_uploader("Sube el PDF de Linderos Aisaldo", type=["pdf"])
+archivo = st.file_uploader("Sube el PDF de la Escritura", type=["pdf"])
 
 if archivo:
-    if st.button("🚀 Extraer Datos y Trazar Poligonal (Anti-Ruido)"):
+    if st.button("🚀 Extraer Datos y Trazar Poligonal"):
         try:
-            status = st.status("Analizando PDF aislado. Implementando blindaje contra ruido catastral...", expanded=True)
+            status = st.status("Analizando documento nativo...", expanded=True)
             
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
                 temp_pdf.write(archivo.read())
@@ -213,24 +215,21 @@ if archivo:
                 gemini_file = genai.get_file(gemini_file.name)
 
             prompt = """
-            Eres un ingeniero topógrafo experto. Analiza el PDF adjunto (que contiene la descripción técnica de linderos).
+            Eres un ingeniero topógrafo salvadoreño. Analiza el documento legal adjunto.
             
-            MANDATO DE PUREZA CATASTRAL:
-            1. Extrae el propietario, colindantes, etc.
-            2. Extrae TODOS LOS TRAMOS TÉCNICOS secuenciales.
-            3. NO inventes datos. 
-            4. FILTRADO DE RUIDO CRÍTICO: El PDF puede contener texto basura (ej. números de página, notas al margen) que NotebookLM leyó como si fuesen linderos.
-               - Busca tramos que sigan la estructura secuencial.
-               - Si encuentras distancias menores a 1 metro que parecen ruido de OCR o números sueltos (ej. 0.01m, 0.40m), ignóralas por completo. El perímetro real debe estar compuesto por tramos significativos.
-
-            Responde ÚNICAMENTE con este JSON:
+            INSTRUCCIONES:
+            1. Extrae el propietario actual, los colindantes, las servidumbres y las quebradas.
+            2. Extrae TODOS LOS TRAMOS TÉCNICOS (rumbos/azimuts y distancias) del perímetro.
+            3. NO inventes datos. Extrae la información real tal como está escrita.
+            
+            Responde ÚNICAMENTE con este formato JSON:
             {
-              "propietario": "Nombre",
-              "colindantes": ["..."],
-              "servidumbres": "...",
-              "quebradas": "...",
+              "propietario": "Nombre completo",
+              "colindantes": ["Norte: ...", "Sur: ...", "Oriente: ...", "Poniente: ..."],
+              "servidumbres": "Describir si hay",
+              "quebradas": "Describir si hay",
               "tramos": [
-                {"etiqueta": "E1", "rumbo_limpio": "N 10° 15' 20'' E", "distancia": 45.00, "es_curva": false}
+                {"etiqueta": "E1", "rumbo_limpio": "N 10° 15' 20\" E", "distancia": 45.00, "es_curva": false}
               ]
             }
             """
@@ -251,10 +250,10 @@ if archivo:
                 st.stop()
             
             ruta = crear_dxf_integral(datos)
-            status.update(label=f"✅ Datos recuperados. {len(datos.get('tramos', []))} tramos reales filtrados.", state="complete")
+            status.update(label=f"✅ Datos recuperados. {len(datos.get('tramos', []))} tramos extraídos.", state="complete")
             
             with open(ruta, "rb") as f:
-                st.download_button("💾 DESCARGAR DXF PROFESIONAL", f, file_name="Plano_Campus_Filtrado.dxf")
+                st.download_button("💾 DESCARGAR DXF PROFESIONAL", f, file_name="Plano_Generado_NormAI.dxf")
             
             try:
                 genai.delete_file(gemini_file.name)
@@ -265,4 +264,5 @@ if archivo:
             st.error(f"Error: {e}")
 
 st.divider()
+# CAPCIÓN ACTUALIZADA CON TU NOMBRE Y TÍTULO
 st.caption("Norm.AI | Tecnología de Precisión | Arq. Miguel Guidos")
