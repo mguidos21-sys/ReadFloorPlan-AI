@@ -71,15 +71,13 @@ def interpretar_rumbo_o_azimut(texto, ultimo_rad=0.0):
         elif ns == 'S' and ew == 'W': ang = 270 - dec
         return math.radians(ang)
         
-    # 3. PLAN B: Direcciones Cardinales Puras (Para escrituras antiguas sin grados)
+    # 3. PLAN B: Direcciones Cardinales Puras (Para escrituras antiguas)
     letras = [c for c in t_norm if c in ['N', 'S', 'E', 'W']]
     if letras:
-        # Si solo menciona un punto cardinal
         if all(c == 'N' for c in letras): return math.radians(90)
         if all(c == 'S' for c in letras): return math.radians(270)
         if all(c == 'E' for c in letras): return math.radians(0)
         if all(c == 'W' for c in letras): return math.radians(180)
-        # Si menciona esquinas (ej. Nororiente)
         if set(letras) == {'N', 'E'}: return math.radians(45)
         if set(letras) == {'N', 'W'}: return math.radians(135)
         if set(letras) == {'S', 'E'}: return math.radians(315)
@@ -212,7 +210,7 @@ def crear_dxf_integral(datos):
     return temp_path
 
 # --- 4. INTERFAZ ---
-st.info("💡 **Nota de Uso:** El sistema procesa el **primer lote** descrito. Si la escritura contiene descripciones antiguas (solo Norte, Sur, etc. sin grados), se generará un croquis ortogonal esquemático.")
+st.info("💡 **Nota de Uso:** El sistema extrae los datos del **primer lote** descrito. Si carece de rumbos precisos (grados), generará un croquis ortogonal basado en puntos cardinales.")
 
 archivo = st.file_uploader("Sube el PDF de la Escritura", type=["pdf"])
 
@@ -232,14 +230,14 @@ if archivo:
                 gemini_file = genai.get_file(gemini_file.name)
 
             prompt = """
-            Eres un ingeniero topógrafo salvadoreño. Analiza la escritura o documento legal adjunto.
+            Eres un ingeniero topógrafo experto. Analiza el documento legal adjunto.
             
-            INSTRUCCIONES ESTRICTAS:
+            INSTRUCCIONES ESTRICTAS (CUMPLIMIENTO OBLIGATORIO):
             1. Extrae el propietario, colindantes, servidumbres y quebradas.
-            2. REGLA DE AISLAMIENTO: Si hay varios lotes ("PRIMERO", "SEGUNDO"), extrae ÚNICAMENTE los tramos del PRIMER LOTE.
-            3. Extrae TODOS LOS TRAMOS TÉCNICOS. NO importa la cantidad.
-            4. REGLA DE ESCRITURAS ANTIGUAS: Si el documento no menciona grados/minutos/segundos, sino únicamente puntos cardinales (ej. "Al Norte linda con...", "Al Oriente..."), DEBES extraer ese punto cardinal como si fuera el rumbo. Ejemplo: {"rumbo_limpio": "NORTE"}.
-            5. NUNCA uses comillas dobles (") dentro de los valores de rumbo.
+            2. REGLA DE AISLAMIENTO (MÚLTIPLES LOTES): Si la escritura describe más de un lote o propiedad (ej. "Lote PRIMERO", "Lote SEGUNDO"), extrae ÚNICAMENTE los tramos del PRIMER LOTE. Ignora el resto para evitar polígonos cruzados.
+            3. MANDATO ANTI-PEREZA (EXHAUSTIVIDAD): Extrae TODOS LOS TRAMOS TÉCNICOS del perímetro. ¡NO IMPORTA SI SON 4, 15, 76 O MÁS DE 100 TRAMOS! Tienes estrictamente prohibido resumir, omitir o cortar la lista a la mitad. Debes extraer el perímetro completo hasta cerrarlo.
+            4. REGLA DE ESCRITURAS ANTIGUAS: Si el documento no menciona grados/minutos/segundos, sino únicamente puntos cardinales lineales (ej. "Al Norte linda con..."), extrae el punto cardinal como rumbo. Ejemplo: {"rumbo_limpio": "NORTE"}. Si tiene grados, extrae el rumbo completo de forma normal.
+            5. REGLA DE FORMATO: NUNCA uses comillas dobles (") dentro de los valores de rumbo para referirte a los segundos. Usa dos comillas simples ('') o ignora el símbolo.
             
             Responde ÚNICAMENTE con este formato JSON:
             {
@@ -248,10 +246,11 @@ if archivo:
               "servidumbres": "Describir si hay",
               "quebradas": "Describir si hay",
               "tramos": [
-                {"etiqueta": "E1", "rumbo_limpio": "NORTE", "distancia": 45.00, "es_curva": false},
-                {"etiqueta": "E2", "rumbo_limpio": "ORIENTE", "distancia": 12.30, "es_curva": false}
+                {"etiqueta": "E1", "rumbo_limpio": "N 10° 15' 20'' E", "distancia": 45.00, "es_curva": false},
+                {"etiqueta": "E2", "rumbo_limpio": "NORTE", "distancia": 12.30, "es_curva": true}
               ]
             }
+            IMPORTANTE: El arreglo "tramos" DEBE contener la lista COMPLETA de todos los linderos descritos para evitar colapsos geométricos. Revisa tu trabajo.
             """
             
             response = model.generate_content([prompt, gemini_file])
